@@ -1,14 +1,11 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#0d0f13" />
-  <meta name="description" content="VEX CAD — fast browser CAD for VEX IQ robots." />
-  <title>VEX CAD</title>
-</head>
-<body>
-  <div id="app"></div>
-  <script type="module" src="/src/main.js"></script>
-</body>
-</html>
+<!doctype html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="theme-color" content="#101318"/><title>VEX CAD</title><link rel="stylesheet" href="./styles.css"/>
+<script type="importmap">{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}</script></head><body>
+<div id="app">
+<header class="topbar"><div class="brand"><b>VEX CAD</b><span id="projectName">Untitled</span></div><div class="tools">
+<button id="newBtn">New</button><button id="openBtn">Open</button><button id="saveBtn">Save</button><button id="importBtn">Import STEP</button><span class="sep"></span><button id="undoBtn" title="Ctrl+Z">↶</button><button id="redoBtn" title="Ctrl+Y">↷</button><button id="moveBtn" class="active">Move</button><button id="rotateBtn">Rotate</button><button id="fitBtn">Fit</button><select id="quality"><option value="low">Low</option><option value="balanced" selected>Balanced</option><option value="high">High</option></select></div></header>
+<div class="workspace"><aside class="panel left"><div class="panel-title">Parts</div><input id="partSearch" placeholder="Search part, number, category…"/><select id="category"><option>All</option></select><div class="library-meta" id="libraryMeta">Loading library…</div><div id="partsList" class="parts-list"></div></aside>
+<main id="viewport"><div id="status" class="status">Starting…</div><div id="placementHint" class="placement-hint hidden"></div><div id="selectRect" class="select-rect hidden"></div></main>
+<aside class="panel right"><div class="panel-title">Inspector</div><div id="inspector" class="inspector empty">Select a part</div><div class="panel-title small">Constraints</div><div id="constraints" class="constraints empty">No constraints</div></aside></div>
+<footer><span id="stats">0 parts</span><span id="perf">GPU ready</span><span class="grow"></span><span>Shift+drag box select · Esc cancel · Delete remove · M/R transform</span></footer>
+<input id="projectFile" type="file" accept=".vxcad,application/json" hidden/><input id="cadFile" type="file" accept=".step,.stp,.iges,.igs,.brep,.brp" hidden/>
+</div><script type="module" src="./src/app.js"></script></body></html>

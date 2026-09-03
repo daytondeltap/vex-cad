@@ -1,50 +1,101 @@
 name: Build and deploy VEX CAD
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
 permissions:
   contents: read
   pages: write
   id-token: write
+
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
         with:
           node-version: 24
-      - uses: actions/setup-python@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+
+      - name: Test editor core
+        run: node --test tests/*.test.mjs
+
       - name: Cache generated VEX mesh library
         id: vex-cache
         uses: actions/cache@v4
         with:
           path: .vex-parts-cache
-          key: vex-iq-2024-11-08-meshcache-v2
-      - name: Build VEX geometry cache
+          key: vex-iq-2024-11-08-vxm-v3
+
+      - name: Generate VEX IQ geometry cache from official STEP library
         if: steps.vex-cache.outputs.cache-hit != 'true'
         run: |
-          python -m pip install --disable-pip-version-check cadquery numpy
-          mkdir -p .vex-parts-cache
+          python -m pip install --disable-pip-version-check cadquery
+          rm -rf .vex-parts-cache
           python tools/build_parts.py --out .vex-parts-cache
-      - name: Stage geometry cache
+
+      - name: Stage static site
         run: |
-          rm -rf public/parts
-          mkdir -p public/parts
-          cp -R .vex-parts-cache/. public/parts/
-      - run: npm install --no-audit --no-fund
-      - run: npm run check
-      - run: npm run build
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v4
+          rm -rf dist
+          mkdir -p dist/parts dist/vendor/addons/controls dist/occt
+          cp index.html styles.css dist/
+          cp -R src dist/src
+          cp -R .vex-parts-cache/. dist/parts/
+
+      - name: Vendor pinned Three.js runtime
+        run: |
+          curl --fail --location --retry 4 --silent --show-error \
+            https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js \
+            -o dist/vendor/three.module.js
+          curl --fail --location --retry 4 --silent --show-error \
+            https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/controls/OrbitControls.js \
+            -o dist/vendor/addons/controls/OrbitControls.js
+          curl --fail --location --retry 4 --silent --show-error \
+            https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/controls/TransformControls.js \
+            -o dist/vendor/addons/controls/TransformControls.js
+
+      - name: Vendor pinned OpenCascade WebAssembly runtime
+        run: |
+          curl --fail --location --retry 4 --silent --show-error \
+            https://cdn.jsdelivr.net/npm/@sunbox/occt-import-js@0.0.28/dist/occt-import-js-worker.js \
+            -o dist/occt/occt-import-js-worker.js
+          curl --fail --location --retry 4 --silent --show-error \
+            https://cdn.jsdelivr.net/npm/@sunbox/occt-import-js@0.0.28/dist/occt-import-js.js \
+            -o dist/occt/occt-import-js.js
+          curl --fail --location --retry 4 --silent --show-error \
+            https://cdn.jsdelivr.net/npm/@sunbox/occt-import-js@0.0.28/dist/occt-import-js.wasm \
+            -o dist/occt/occt-import-js.wasm
+
+      - name: Validate generated assets and source
+        run: |
+          node scripts/check-assets.mjs dist/parts/manifest.json
+          find src -name '*.js' -print0 | xargs -0 -n1 node --check
+          test -s dist/vendor/three.module.js
+          test -s dist/occt/occt-import-js.wasm
+          touch dist/.nojekyll
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
         with:
           path: dist
+
   deploy:
     environment:
       name: github-pages
@@ -52,6 +103,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Deploy
+      - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
