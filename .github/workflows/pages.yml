@@ -39,14 +39,21 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .vex-parts-cache
-          key: vex-iq-2024-11-08-vxm-v3
+          key: vex-iq-2024-11-08-vxm-v4
 
       - name: Generate VEX IQ geometry cache from official STEP library
         if: steps.vex-cache.outputs.cache-hit != 'true'
         run: |
           python -m pip install --disable-pip-version-check cadquery
           rm -rf .vex-parts-cache
-          python tools/build_parts.py --out .vex-parts-cache
+          curl --fail --location --retry 5 --retry-all-errors \
+            --user-agent 'Mozilla/5.0 VEX-CAD-Build/1.0' \
+            'https://content.vexrobotics.com/vexiq/downloads/VEX-IQ-All-Parts-2024-11-08.zip' \
+            -o "$RUNNER_TEMP/VEX-IQ-All-Parts-2024-11-08.zip"
+          test -s "$RUNNER_TEMP/VEX-IQ-All-Parts-2024-11-08.zip"
+          python tools/build_parts.py \
+            --zip "$RUNNER_TEMP/VEX-IQ-All-Parts-2024-11-08.zip" \
+            --out .vex-parts-cache
 
       - name: Stage static site
         run: |
