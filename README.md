@@ -1,127 +1,129 @@
 # VEX CAD
 
-A browser-based, high-performance VEX IQ CAD editor focused on fast assembly instead of traditional CAD complexity.
+A browser-based VEX IQ CAD editor focused on fast assembly, SmartSnap building, real-time collaboration, and student-friendly controls rather than traditional CAD complexity.
 
-> Independent project. VEX and VEX IQ are trademarks of their respective owner(s). The built-in part library is generated from VEX's publicly available STEP CAD files with attribution to VEX Robotics.
+> Independent project. VEX and VEX IQ are trademarks of their respective owner(s). Built-in geometry is derived from publicly available VEX IQ STEP CAD data.
 
-## Current scope
+## Implemented
 
-Multiplayer/collaboration is intentionally **not** part of the current build.
-
-### Implemented
-
-- Real VEX IQ geometry generated from the official STEP library
-- 467-part searchable VEX IQ library
-- GPU rendering with Three.js/WebGL2
-- Instanced rendering for repeated parts
+- Real VEX IQ geometry rendered with Three.js/WebGL2
+- GPU instancing for repeated parts
 - OpenCascade WebAssembly import for STEP/STP, IGES/IGS, and BREP/BRP
-- Exact-BREP cylindrical attachment extraction for verified round-hole axes
-- Heuristic shaft/socket attachment metadata for rotary parts
-- SmartSnap ghost placement and compatible-attachment highlighting
-- Fixed and revolute constraints
-- Revolute angle control
-- Constraint-cycle prevention
-- Constraint propagation through assemblies
-- Click selection, Ctrl/Cmd multi-selection, Shift-drag box selection
-- Move and rotate gizmos
-- Numeric position/rotation editing
-- Duplicate, delete, hide, lock, isolate, fit-to-selection
-- Undo/redo
-- `.vxcad` project save/open
-- Local autosave and recovery
-- Imported custom CAD embedded into saved projects
-- Low / Balanced / High rendering profiles
-- Automatic low-quality selection for devices reporting <=4 GB RAM or <=4 logical CPU cores
-- Render-on-demand, no shadows/post-processing, capped pixel ratio
-- Per-part mesh triangle cap during library preprocessing
-- Imported-CAD file-size and triangle-count guards
-- WebGL context-loss warning with autosave protection
+- Verified BREP attachment axes and SmartSnap ghost placement
+- Fixed and revolute constraints with cycle prevention and propagation
+- Click, multi-select and box selection
+- Move/rotate transform gizmos and numeric transforms
+- Undo/redo, save/open, autosave/recovery, hide/lock/isolate/fit
+- Supabase-backed live collaboration with capability-secured room links, presence and durable snapshots
+- Fault-isolated local editing when realtime or the parts library is unavailable
+- Low / Balanced / High GPU profiles
+- Cadasio-style material rendering using shared PBR materials rather than per-part bitmap textures
+- Studio Plastic, Matte CAD and Glossy material presets
+- ACES tone mapping, adjustable exposure and three-point studio lighting
+- Optional soft contact-style floor shadows; Auto disables them in Low mode
+- Material heuristics for plastic, rubber-like, transparent, electronics and shaft-like parts
+- Configurable grid and axes visibility
+- Settings panel with persistent local preferences and configurable keybinds
+- Standard CAD navigation and an optional Roblox Studio-style control preset
 
-## Architecture
+## Roblox Studio control preset
 
-The deployed application is a static GitHub Pages site. There is no application server or database requirement.
+Enable **Settings → Navigation → Roblox Studio**.
+
+Default controls:
+
+- **RMB + mouse** — free-look camera
+- **W / A / S / D** — fly forward/left/back/right
+- **Q / E** — down/up
+- **Shift** — 3× fly speed
+- **MMB + drag** — lateral pan
+- **Mouse wheel** — camera forward/back
+- **LMB + drag** — box selection
+- **R** — cycle Move / Rotate
+- **M** — Move tool
+- **T** — Rotate tool
+- **F** — frame selection
+- **Delete** — delete selection
+
+Movement keys, tool keys, camera speed, look sensitivity, pan sensitivity and invert-Y are configurable. Standard CAD controls remain the default preset.
+
+## Rendering model
+
+The official STEP assets do not depend on bitmap texture maps for their normal plastic appearance. VEX CAD therefore uses lightweight shared PBR materials and lighting:
 
 ```text
-Official VEX IQ STEP archive
-        |
-        v
-CadQuery / OpenCascade preprocessing (CI)
-        |
-        +-- exact BREP attachment metadata
-        +-- quantized VXM render meshes
-        v
-GitHub Pages
-        |
-        +-- Three.js / WebGL2 editor
-        +-- OpenCascade WASM custom CAD importer
+STEP / VXM geometry
+      |
+      +-- part color metadata
+      +-- category/name material classification
+      v
+Three.js materials
+      +-- plastic clear-coat
+      +-- rubber-like matte response
+      +-- transparent response
+      +-- electronics/shaft variants
+      v
+ACES tone mapping + studio key/fill/rim lighting
 ```
 
-Repeated parts are rendered with `THREE.InstancedMesh`, while exact project transforms and constraint state remain independent of the render batching layer.
+Balanced and High use `MeshPhysicalMaterial`; Low uses a cheaper `MeshStandardMaterial` path. Shadows default to Auto and are disabled in Low mode.
+
+## Collaboration architecture
+
+The editor remains local-first. Multiplayer is an optional layer backed by the **Vex-IQ-ServerSide-Storage** Supabase project.
+
+- room URLs use high-entropy capability tokens;
+- only token hashes are stored server-side;
+- direct table access is denied;
+- public RPC wrappers validate access through private database functions;
+- realtime failures do not stop local CAD editing.
 
 ## Deployment
 
-Pushes to `main` run `.github/workflows/pages.yml`.
+The public app is currently deployed as an isolated `/vex-cad/` subsite of the Pages-enabled `msc-event-management` repository.
 
-The workflow:
+The deployment workflow:
 
-1. runs the dependency-free editor core tests,
-2. restores the generated VEX mesh cache if available,
-3. otherwise downloads the official VEX IQ STEP archive and generates the optimized mesh library,
-4. vendors pinned Three.js and OpenCascade WebAssembly runtime files,
-5. validates every generated mesh and attachment manifest,
-6. publishes the static site to GitHub Pages.
+1. checks out both repositories,
+2. runs dependency-free core, collaboration and settings tests,
+3. restores/generates the optimized VEX mesh cache,
+4. vendors pinned Three.js, OpenCascade and Supabase browser runtimes,
+5. stages VEX CAD in a versioned source directory to prevent mixed browser caches,
+6. validates every shipped asset,
+7. runs a real headless-Chrome WebGL smoke test,
+8. verifies the library loads, Settings opens, Roblox controls move the camera, the transform-cycle key works, and a real VEX part can be placed,
+9. publishes the combined GitHub Pages artifact.
 
-If GitHub Pages has never been enabled for the repository, perform the one-time repository setting:
+## Performance safeguards
 
-**Settings -> Pages -> Build and deployment -> Source -> GitHub Actions**
+- lazy geometry loading
+- `THREE.InstancedMesh` for repeated parts
+- quantized render meshes
+- per-part preprocessing triangle budget
+- worker-based custom CAD import
+- 90 MB CAD import guard
+- render-on-demand
+- capped device pixel ratio
+- automatic Low profile on small-memory / low-core devices
+- Low-mode standard materials and no automatic shadows
+- WebGL context-loss warning with autosave protection
 
-No Supabase project, API key, database, or other backend is required for the current build.
-
-## Local validation
-
-Core tests do not require npm packages:
+## Local tests
 
 ```bash
 node --test tests/*.test.mjs
 ```
 
-Generate the part cache from an existing ZIP:
-
-```bash
-python tools/build_parts.py \
-  --zip VEX-IQ-All-Parts-2024-11-08.zip \
-  --out public/parts
-node scripts/check-assets.mjs public/parts/manifest.json
-```
-
-The production workflow vendors its browser dependencies automatically.
-
-## Performance targets
-
-The editor is designed to degrade gracefully on school laptops and lower-end devices:
-
-- geometry loads only when a part is actually used,
-- identical parts share one GPU geometry and are drawn in an instance batch,
-- library meshes are quantized before deployment,
-- a single library part is capped at 90,000 triangles,
-- custom CAD is parsed in a worker,
-- imports larger than 90 MB are rejected before WASM allocation,
-- extremely high-triangle imports are rejected based on the active quality profile,
-- rendering happens only when the view or scene changes,
-- Low mode caps device pixel ratio at 1.0.
-
-This cannot guarantee every possible STEP file or every old GPU will work, but the application is designed to fail with a clear error rather than intentionally attempting unsafe memory allocations.
+The production Pages workflow additionally runs the browser/WebGL smoke test.
 
 ## Short-term roadmap
 
-- More verified attachment types beyond round BREP cylinders
-- Axle/square-socket recognition using exact topology
-- Better gear/shaft semantics
-- Orthographic and named camera views
-- BOM export
-- Build-instruction generation
-- Collision diagnostics
-- Seasonal field workspaces
-- Mechanical/gear animation
-
-Multiplayer remains deferred until explicitly reintroduced.
+- restore the full current 467-part official library in the hosted build instead of the smaller mirror fallback
+- more exact attachment types beyond round cylinders
+- square axle/socket topology recognition
+- better gear/shaft semantics
+- orthographic and named views
+- BOM export and build instructions
+- collision diagnostics
+- seasonal field workspaces
+- mechanism and gear animation
