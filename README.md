@@ -103,7 +103,7 @@ The editor is designed to degrade gracefully on school laptops and lower-end dev
 - geometry loads only when a part is actually used,
 - identical parts share one GPU geometry and are drawn in an instance batch,
 - library meshes are quantized before deployment,
-- a single library part is hard-capped at 90,000 triangles during preprocessing,
+- a single library part is capped at 90,000 triangles,
 - custom CAD is parsed in a worker,
 - imports larger than 90 MB are rejected before WASM allocation,
 - extremely high-triangle imports are rejected based on the active quality profile,
