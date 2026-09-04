@@ -2,16 +2,50 @@ import * as THREE from 'three';
 
 const MAX_VERTICES=2_000_000;
 const MAX_INDICES=6_000_000;
+const APP_ROOT=new URL('../../',import.meta.url);
+
+async function fetchWithTimeout(url,{timeout=12000,cache='no-store'}={}){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),timeout);
+  try{return await fetch(url,{cache,signal:controller.signal});}
+  catch(err){
+    if(err?.name==='AbortError')throw new Error(`Timed out loading ${new URL(url).pathname}`);
+    throw err;
+  }finally{clearTimeout(timer);}
+}
 
 export class PartLibrary {
-  constructor(base='./parts/'){ this.base=base; this.manifest=null; this.byId=new Map(); this.geometryCache=new Map(); }
+  constructor(base='./parts/'){
+    this.base=new URL(base,APP_ROOT).href;
+    this.manifest=null;
+    this.byId=new Map();
+    this.geometryCache=new Map();
+  }
   async loadManifest(){
-    const r=await fetch(`${this.base}manifest.json`,{cache:'force-cache'}); if(!r.ok)throw new Error(`Parts manifest HTTP ${r.status}`);
-    const manifest=await r.json();
-    if(!manifest||!Array.isArray(manifest.parts)||manifest.parts.length===0)throw new Error('Parts manifest is invalid or empty');
-    const byId=new Map();
-    for(const p of manifest.parts){if(!p?.id||!p.mesh||byId.has(p.id))throw new Error(`Invalid or duplicate part definition: ${p?.id||'unknown'}`);byId.set(p.id,p);}
-    this.manifest=manifest; this.byId=byId; return this.manifest;
+    const baseUrl=new URL('manifest.json',this.base);
+    let lastError=null;
+    for(let attempt=0;attempt<2;attempt++){
+      try{
+        const url=new URL(baseUrl);
+        if(attempt)url.searchParams.set('reload',Date.now().toString());
+        const r=await fetchWithTimeout(url,{cache:'no-store'});
+        if(!r.ok)throw new Error(`Parts manifest HTTP ${r.status}`);
+        const manifest=await r.json();
+        if(!manifest||!Array.isArray(manifest.parts)||manifest.parts.length===0)throw new Error('Parts manifest is invalid or empty');
+        const byId=new Map();
+        for(const p of manifest.parts){
+          if(!p?.id||!p.mesh||byId.has(p.id))throw new Error(`Invalid or duplicate part definition: ${p?.id||'unknown'}`);
+          byId.set(p.id,p);
+        }
+        this.manifest=manifest;
+        this.byId=byId;
+        return this.manifest;
+      }catch(err){
+        lastError=err;
+        if(attempt===0)await new Promise(resolve=>setTimeout(resolve,350));
+      }
+    }
+    throw new Error(`Could not load the VEX parts library: ${lastError?.message||'unknown error'}`);
   }
   get(id){ return this.byId.get(id); }
   search(query='',category='All'){
@@ -23,11 +57,11 @@ export class PartLibrary {
   async geometry(id){
     if(this.geometryCache.has(id))return this.geometryCache.get(id);
     const def=this.get(id); if(!def)throw new Error(`Unknown part ${id}`);
-    const promise=this.#loadVxm(`${this.base}${def.mesh}`).catch(err=>{this.geometryCache.delete(id);throw err;});
+    const promise=this.#loadVxm(new URL(def.mesh,this.base)).catch(err=>{this.geometryCache.delete(id);throw err;});
     this.geometryCache.set(id,promise); return promise;
   }
   async #loadVxm(url){
-    const r=await fetch(url,{cache:'force-cache'}); if(!r.ok)throw new Error(`Mesh HTTP ${r.status}`); const b=await r.arrayBuffer();
+    const r=await fetchWithTimeout(url,{timeout:18000,cache:'force-cache'}); if(!r.ok)throw new Error(`Mesh HTTP ${r.status}`); const b=await r.arrayBuffer();
     if(b.byteLength<36)throw new Error('VEX mesh is truncated');
     const dv=new DataView(b),magic=String.fromCharCode(...new Uint8Array(b,0,4)); if(magic!=='VXM1')throw new Error('Invalid VEX mesh');
     const vc=dv.getUint32(4,true),ic=dv.getUint32(8,true);
