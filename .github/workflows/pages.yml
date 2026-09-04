@@ -17,6 +17,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -39,7 +40,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .vex-parts-cache
-          key: vex-iq-github-step-mirror-v2
+          key: vex-iq-github-step-mirror-v3
 
       - name: Generate real VEX IQ geometry cache
         if: steps.vex-cache.outputs.cache-hit != 'true'
@@ -62,40 +63,32 @@ jobs:
           cp -R src dist/src
           cp -R .vex-parts-cache/. dist/parts/
 
-      - name: Vendor pinned Three.js runtime
+      - name: Vendor pinned browser runtimes
         run: |
-          curl --fail --location --retry 4 --silent --show-error \
-            https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js \
-            -o dist/vendor/three.module.js
-          curl --fail --location --retry 4 --silent --show-error \
-            https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/controls/OrbitControls.js \
-            -o dist/vendor/addons/controls/OrbitControls.js
-          curl --fail --location --retry 4 --silent --show-error \
-            https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/controls/TransformControls.js \
-            -o dist/vendor/addons/controls/TransformControls.js
-
-      - name: Vendor pinned OpenCascade WebAssembly runtime
-        run: |
-          curl --fail --location --retry 4 --silent --show-error \
-            https://cdn.jsdelivr.net/npm/@sunbox/occt-import-js@0.0.28/dist/occt-import-js-worker.js \
-            -o dist/occt/occt-import-js-worker.js
-          curl --fail --location --retry 4 --silent --show-error \
-            https://cdn.jsdelivr.net/npm/@sunbox/occt-import-js@0.0.28/dist/occt-import-js.js \
-            -o dist/occt/occt-import-js.js
-          curl --fail --location --retry 4 --silent --show-error \
-            https://cdn.jsdelivr.net/npm/@sunbox/occt-import-js@0.0.28/dist/occt-import-js.wasm \
-            -o dist/occt/occt-import-js.wasm
+          npm install --no-save --ignore-scripts three@0.185.1 @sunbox/occt-import-js@0.0.28
+          cp node_modules/three/build/three.module.js dist/vendor/three.module.js
+          cp node_modules/three/examples/jsm/controls/OrbitControls.js dist/vendor/addons/controls/OrbitControls.js
+          cp node_modules/three/examples/jsm/controls/TransformControls.js dist/vendor/addons/controls/TransformControls.js
+          cp node_modules/@sunbox/occt-import-js/dist/occt-import-js-worker.js dist/occt/occt-import-js-worker.js
+          cp node_modules/@sunbox/occt-import-js/dist/occt-import-js.js dist/occt/occt-import-js.js
+          cp node_modules/@sunbox/occt-import-js/dist/occt-import-js.wasm dist/occt/occt-import-js.wasm
 
       - name: Validate generated assets and source
         run: |
           node scripts/check-assets.mjs dist/parts/manifest.json
           find src -name '*.js' -print0 | xargs -0 -n1 node --check
           test -s dist/vendor/three.module.js
+          test -s dist/vendor/addons/controls/OrbitControls.js
+          test -s dist/vendor/addons/controls/TransformControls.js
+          test -s dist/occt/occt-import-js-worker.js
+          test -s dist/occt/occt-import-js.js
           test -s dist/occt/occt-import-js.wasm
           touch dist/.nojekyll
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
@@ -108,6 +101,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 10
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
