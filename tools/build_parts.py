@@ -5,6 +5,9 @@ from pathlib import Path
 import cadquery as cq
 
 PART_RE = re.compile(r'(228(?:-[A-Za-z0-9]+){1,5})', re.IGNORECASE)
+LFS_PREFIX = b'version https://git-lfs.github.com/spec/v1'
+MAX_FAILURE_RATIO = 0.10
+MIN_USABLE_PARTS = 50
 
 
 def category_for(name: str) -> str:
@@ -109,6 +112,8 @@ def extract_attachments(shape, name, bbox):
 
 def flatten_shape(obj):
     vals=obj.vals()
+    if not vals:
+        raise RuntimeError('STEP import produced no shapes')
     if len(vals)==1:
         return vals[0]
     return cq.Compound.makeCompound(vals)
@@ -129,8 +134,10 @@ def tessellate_adaptive(shape, diag):
     for tol,ang in passes:
         verts,tris=shape.tessellate(tol,ang)
         last=(verts,tris,tol)
-        if len(tris) <= 90000:
+        if verts and tris and len(tris) <= 90000:
             return last
+    if last is None or not last[0] or not last[1]:
+        raise RuntimeError('tessellation produced no mesh')
     raise RuntimeError(f'mesh exceeds 90000 triangle budget ({len(last[1])})')
 
 
@@ -162,11 +169,25 @@ def clean_display(zip_name, part_number):
     return stem
 
 
+def classify_source_bytes(data: bytes):
+    stripped=data.lstrip()
+    if not stripped:
+        return 'empty-source'
+    if stripped.startswith(LFS_PREFIX):
+        return 'git-lfs-pointer'
+    # A real STEP exchange file should contain ISO-10303-21 near the beginning.
+    head=stripped[:4096].upper()
+    if b'ISO-10303-21' not in head:
+        return 'invalid-step-header'
+    return None
+
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument('--zip',required=True)
     ap.add_argument('--out',required=True)
     ap.add_argument('--limit',type=int,default=0)
+    ap.add_argument('--strict',action='store_true',help='fail on any source conversion failure')
     args=ap.parse_args()
     zp=Path(args.zip)
     if not zp.exists():
@@ -192,29 +213,49 @@ def main():
             uid=hashlib.sha1(name.encode('utf8')).hexdigest()[:10]
             pid=f'{pn}-{uid}'
             tmp=Path(tempfile.gettempdir())/f'vex-{uid}.step'
-            tmp.write_bytes(z.read(name))
+            data=z.read(name)
+            source_issue=classify_source_bytes(data)
+            if source_issue:
+                failures.append({'file':base,'kind':source_issue,'error':f'source entry skipped: {source_issue}'})
+                print(f'WARN {base}: {source_issue}', flush=True)
+                continue
+            tmp.write_bytes(data)
             try:
                 obj=cq.importers.importStep(str(tmp)); shape=flatten_shape(obj)
                 bb=shape.BoundingBox(); bbmin=[bb.xmin,bb.ymin,bb.zmin]; bbmax=[bb.xmax,bb.ymax,bb.zmax]
+                if not all(math.isfinite(x) for x in bbmin+bbmax):
+                    raise RuntimeError('non-finite bounding box')
                 diag=math.sqrt(sum((bbmax[i]-bbmin[i])**2 for i in range(3)))
+                if not math.isfinite(diag) or diag <= 0:
+                    raise RuntimeError('invalid zero/negative bounding box')
                 verts,tris,tol=tessellate_adaptive(shape,diag)
                 meshname=f'{uid}.vxm'; write_mesh(meshdir/meshname,verts,tris,bbmin,bbmax)
                 cat=category_for(display); attachments=extract_attachments(shape,display,(bbmin,bbmax))
                 parts.append({'id':pid,'partNumber':pn,'name':display,'category':cat,'color':color_for(cat),'mesh':f'mesh/{meshname}',
                     'bbox':[v3(bbmin),v3(bbmax)],'vertices':len(verts),'triangles':len(tris),'tolerance':round(tol,4),'attachments':attachments})
             except Exception as e:
-                failures.append({'file':base,'error':str(e)[:300]})
+                failures.append({'file':base,'kind':'conversion-error','error':str(e)[:300]})
+                print(f'WARN {base}: {e}', flush=True)
             finally:
                 try: tmp.unlink()
                 except Exception: pass
             if idx%25==0 or idx==len(names):
                 print(f'{idx}/{len(names)} parts, failures={len(failures)}',flush=True)
-    manifest={'schema':2,'source':'VEX IQ STEP geometry mirror','sourceUrl':'https://github.com/vex-ru/vex-iq-stl',
-      'partCount':len(parts),'verifiedBrepAttachments':sum(sum(1 for a in p['attachments'] if a.get('verified')) for p in parts),
+    total=len(names)
+    ratio=(len(failures)/total) if total else 1.0
+    manifest={'schema':3,'source':'VEX IQ STEP geometry mirror','sourceUrl':'https://github.com/vex-ru/vex-iq-stl',
+      'sourceEntryCount':total,'partCount':len(parts),'failedCount':len(failures),'complete':len(failures)==0,
+      'verifiedBrepAttachments':sum(sum(1 for a in p['attachments'] if a.get('verified')) for p in parts),
       'parts':parts,'failures':failures}
     (out/'manifest.json').write_text(json.dumps(manifest,separators=(',',':')),encoding='utf8')
-    print(json.dumps({'parts':len(parts),'failures':len(failures),'verifiedAttachments':manifest['verifiedBrepAttachments']}))
-    if failures:
+    print(json.dumps({'parts':len(parts),'sourceEntries':total,'failures':len(failures),'failureRatio':round(ratio,4),'verifiedAttachments':manifest['verifiedBrepAttachments']}))
+    if len(parts) < MIN_USABLE_PARTS:
+        print(f'ERROR only {len(parts)} usable parts generated; expected at least {MIN_USABLE_PARTS}', file=sys.stderr)
+        sys.exit(2)
+    if args.strict and failures:
+        sys.exit(2)
+    if ratio > MAX_FAILURE_RATIO:
+        print(f'ERROR source failure ratio {ratio:.1%} exceeds {MAX_FAILURE_RATIO:.0%}', file=sys.stderr)
         sys.exit(2)
 
 
