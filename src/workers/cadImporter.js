@@ -1,7 +1,10 @@
+const OCCT_WORKER_URL=new URL('../../occt/occt-import-js-worker.js',import.meta.url);
+
 export class CADImporter {
   constructor(){this.seq=0;this.pending=[];this.worker=null;}
   #ensure(){
-    if(this.worker)return; const url=new URL('./occt/occt-import-js-worker.js',document.baseURI);this.worker=new Worker(url);
+    if(this.worker)return;
+    this.worker=new Worker(OCCT_WORKER_URL,{name:'vex-cad-occt'});
     this.worker.onmessage=e=>{const p=this.pending.shift();if(!p)return;if(e.data?.error)p.reject(new Error(e.data.error));else p.resolve(e.data?.result||e.data);};
     this.worker.onerror=e=>{const p=this.pending.shift();p?.reject(new Error(e.message||'OpenCascade worker failed'));};
   }
