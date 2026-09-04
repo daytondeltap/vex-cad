@@ -35,9 +35,9 @@ jobs:
       - name: Test editor core
         run: node --test tests/*.test.mjs
 
-      - name: Cache generated VEX mesh library
+      - name: Restore generated VEX mesh library
         id: vex-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: .vex-parts-cache
           key: vex-iq-github-step-mirror-v3
@@ -55,23 +55,49 @@ jobs:
             --zip "$RUNNER_TEMP/vex-iq-step-mirror.zip" \
             --out .vex-parts-cache
 
+      - name: Save generated VEX mesh library
+        if: steps.vex-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .vex-parts-cache
+          key: vex-iq-github-step-mirror-v3
+
+      - name: Restore pinned browser runtimes
+        id: runtime-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .browser-runtime-cache
+          key: vex-cad-browser-runtime-three-0.185.1-occt-0.0.28-v1
+
+      - name: Build pinned browser runtime cache
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        run: |
+          rm -rf .browser-runtime-cache node_modules
+          mkdir -p .browser-runtime-cache/vendor/addons/controls .browser-runtime-cache/occt
+          npm install --no-save --ignore-scripts --no-audit --no-fund three@0.185.1 @sunbox/occt-import-js@0.0.28
+          cp node_modules/three/build/three.module.js .browser-runtime-cache/vendor/three.module.js
+          cp node_modules/three/examples/jsm/controls/OrbitControls.js .browser-runtime-cache/vendor/addons/controls/OrbitControls.js
+          cp node_modules/three/examples/jsm/controls/TransformControls.js .browser-runtime-cache/vendor/addons/controls/TransformControls.js
+          cp node_modules/@sunbox/occt-import-js/dist/occt-import-js-worker.js .browser-runtime-cache/occt/occt-import-js-worker.js
+          cp node_modules/@sunbox/occt-import-js/dist/occt-import-js.js .browser-runtime-cache/occt/occt-import-js.js
+          cp node_modules/@sunbox/occt-import-js/dist/occt-import-js.wasm .browser-runtime-cache/occt/occt-import-js.wasm
+
+      - name: Save pinned browser runtimes
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .browser-runtime-cache
+          key: vex-cad-browser-runtime-three-0.185.1-occt-0.0.28-v1
+
       - name: Stage static site
         run: |
           rm -rf dist
-          mkdir -p dist/parts dist/vendor/addons/controls dist/occt
+          mkdir -p dist/parts
           cp index.html styles.css dist/
           cp -R src dist/src
           cp -R .vex-parts-cache/. dist/parts/
-
-      - name: Vendor pinned browser runtimes
-        run: |
-          npm install --no-save --ignore-scripts three@0.185.1 @sunbox/occt-import-js@0.0.28
-          cp node_modules/three/build/three.module.js dist/vendor/three.module.js
-          cp node_modules/three/examples/jsm/controls/OrbitControls.js dist/vendor/addons/controls/OrbitControls.js
-          cp node_modules/three/examples/jsm/controls/TransformControls.js dist/vendor/addons/controls/TransformControls.js
-          cp node_modules/@sunbox/occt-import-js/dist/occt-import-js-worker.js dist/occt/occt-import-js-worker.js
-          cp node_modules/@sunbox/occt-import-js/dist/occt-import-js.js dist/occt/occt-import-js.js
-          cp node_modules/@sunbox/occt-import-js/dist/occt-import-js.wasm dist/occt/occt-import-js.wasm
+          cp -R .browser-runtime-cache/vendor dist/vendor
+          cp -R .browser-runtime-cache/occt dist/occt
 
       - name: Validate generated assets and source
         run: |
@@ -84,11 +110,6 @@ jobs:
           test -s dist/occt/occt-import-js.js
           test -s dist/occt/occt-import-js.wasm
           touch dist/.nojekyll
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
@@ -103,6 +124,9 @@ jobs:
     needs: build
     timeout-minutes: 10
     steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
