@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -39,20 +39,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .vex-parts-cache
-          key: vex-iq-2024-11-08-vxm-v4
+          key: vex-iq-github-step-mirror-v2
 
-      - name: Generate VEX IQ geometry cache from official STEP library
+      - name: Generate real VEX IQ geometry cache
         if: steps.vex-cache.outputs.cache-hit != 'true'
         run: |
           python -m pip install --disable-pip-version-check cadquery
           rm -rf .vex-parts-cache
           curl --fail --location --retry 5 --retry-all-errors \
-            --user-agent 'Mozilla/5.0 VEX-CAD-Build/1.0' \
-            'https://content.vexrobotics.com/vexiq/downloads/VEX-IQ-All-Parts-2024-11-08.zip' \
-            -o "$RUNNER_TEMP/VEX-IQ-All-Parts-2024-11-08.zip"
-          test -s "$RUNNER_TEMP/VEX-IQ-All-Parts-2024-11-08.zip"
+            'https://codeload.github.com/vex-ru/vex-iq-stl/zip/refs/heads/main' \
+            -o "$RUNNER_TEMP/vex-iq-step-mirror.zip"
+          test -s "$RUNNER_TEMP/vex-iq-step-mirror.zip"
           python tools/build_parts.py \
-            --zip "$RUNNER_TEMP/VEX-IQ-All-Parts-2024-11-08.zip" \
+            --zip "$RUNNER_TEMP/vex-iq-step-mirror.zip" \
             --out .vex-parts-cache
 
       - name: Stage static site
