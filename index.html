@@ -1,11 +1,65 @@
-<!doctype html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="theme-color" content="#101318"/><title>VEX CAD</title><link rel="stylesheet" href="./styles.css"/>
-<script type="importmap">{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}</script></head><body>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta name="theme-color" content="#101318"/>
+<title>VEX CAD</title>
+<link rel="stylesheet" href="./styles.css"/>
+<script type="importmap">{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}</script>
+<script>
+window.__vexBooted=false;
+window.__vexBootError='';
+function vexStartupFailure(message){
+  window.__vexBootError=String(message||'Unknown startup error');
+  if(window.__vexBooted)return;
+  const show=()=>{
+    const status=document.getElementById('status');
+    const meta=document.getElementById('libraryMeta');
+    const perf=document.getElementById('perf');
+    if(status){status.textContent='Startup failed: '+window.__vexBootError;status.style.borderColor='#a84b55';}
+    if(meta)meta.textContent='The editor module did not start. Reload the page; if this repeats, the error above identifies the failing library.';
+    if(perf)perf.textContent='Startup error';
+  };
+  document.readyState==='loading'?document.addEventListener('DOMContentLoaded',show,{once:true}):show();
+}
+window.__vexBootTimer=setTimeout(()=>vexStartupFailure('editor module timed out'),12000);
+window.addEventListener('error',e=>{if(!window.__vexBooted&&e.message)vexStartupFailure(e.message);});
+window.addEventListener('unhandledrejection',e=>{if(!window.__vexBooted)vexStartupFailure(e.reason?.message||e.reason||'module promise rejected');});
+</script>
+</head>
+<body>
 <div id="app">
-<header class="topbar"><div class="brand"><b>VEX CAD</b><span id="projectName">Untitled</span></div><div class="tools">
-<button id="newBtn">New</button><button id="openBtn">Open</button><button id="saveBtn">Save</button><button id="importBtn">Import STEP</button><span class="sep"></span><button id="undoBtn" title="Ctrl+Z">↶</button><button id="redoBtn" title="Ctrl+Y">↷</button><button id="moveBtn" class="active">Move</button><button id="rotateBtn">Rotate</button><button id="fitBtn">Fit</button><select id="quality"><option value="low">Low</option><option value="balanced" selected>Balanced</option><option value="high">High</option></select></div></header>
-<div class="workspace"><aside class="panel left"><div class="panel-title">Parts</div><input id="partSearch" placeholder="Search part, number, category…"/><select id="category"><option>All</option></select><div class="library-meta" id="libraryMeta">Loading library…</div><div id="partsList" class="parts-list"></div></aside>
-<main id="viewport"><div id="status" class="status">Starting…</div><div id="placementHint" class="placement-hint hidden"></div><div id="selectRect" class="select-rect hidden"></div></main>
-<aside class="panel right"><div class="panel-title">Inspector</div><div id="inspector" class="inspector empty">Select a part</div><div class="panel-title small">Constraints</div><div id="constraints" class="constraints empty">No constraints</div></aside></div>
-<footer><span id="stats">0 parts</span><span id="perf">GPU ready</span><span class="grow"></span><span>Shift+drag box select · Esc cancel · Delete remove · M/R transform</span></footer>
+<header class="topbar">
+  <div class="brand"><b>VEX CAD</b><span id="projectName">Untitled</span></div>
+  <div class="tools">
+    <button id="newBtn">New</button><button id="openBtn">Open</button><button id="saveBtn">Save</button><button id="importBtn">Import STEP</button><button id="shareBtn" class="share-button">Share</button>
+    <span class="sep"></span><button id="undoBtn" title="Ctrl+Z">↶</button><button id="redoBtn" title="Ctrl+Y">↷</button><button id="moveBtn" class="active">Move</button><button id="rotateBtn">Rotate</button><button id="fitBtn">Fit</button>
+    <select id="quality" aria-label="Render quality"><option value="low">Low</option><option value="balanced" selected>Balanced</option><option value="high">High</option></select>
+  </div>
+  <button id="collabStatus" class="collab-status" data-state="offline" title="Collaboration status">Local only</button>
+</header>
+<div class="workspace">
+  <aside class="panel left"><div class="panel-title">Parts</div><input id="partSearch" placeholder="Search part, number, category…"/><select id="category"><option>All</option></select><div class="library-meta" id="libraryMeta">Preparing library…</div><div id="partsList" class="parts-list"></div></aside>
+  <main id="viewport"><div id="status" class="status">Starting…</div><div id="placementHint" class="placement-hint hidden"></div><div id="selectRect" class="select-rect hidden"></div><div id="remoteCursors" class="remote-cursors" aria-hidden="true"></div></main>
+  <aside class="panel right"><div class="panel-title">Inspector</div><div id="inspector" class="inspector empty">Select a part</div><div class="panel-title small">Constraints</div><div id="constraints" class="constraints empty">No constraints</div></aside>
+</div>
+<footer><span id="stats">0 parts</span><span id="perf">Starting GPU…</span><span id="presenceCount">0 online</span><span class="grow"></span><span>Shift+drag box select · Esc cancel · Delete remove · M/R transform</span></footer>
 <input id="projectFile" type="file" accept=".vxcad,application/json" hidden/><input id="cadFile" type="file" accept=".step,.stp,.iges,.igs,.brep,.brp" hidden/>
-</div><script type="module" src="./src/app.js"></script></body></html>
+
+<section id="sharePanel" class="share-panel" aria-hidden="true" aria-label="Live collaboration">
+  <div class="share-card">
+    <div class="share-head"><div><b>Live collaboration</b><small id="livePeople">Start a live room to collaborate.</small></div><button id="closeShareBtn" aria-label="Close sharing">×</button></div>
+    <label class="share-field">Your display name<input id="displayName" maxlength="32" autocomplete="off"/></label>
+    <div class="share-room"><span>Room</span><b id="roomCode">Not live</b></div>
+    <label class="share-field">Share link<input id="roomLink" readonly placeholder="Create a room to get a link"/></label>
+    <div class="row"><button id="createRoomBtn" class="primary">Start live room</button><button id="copyRoomBtn" disabled>Copy link</button><button id="leaveRoomBtn" disabled>Leave</button></div>
+    <div class="panel-title small share-subtitle">People</div><div id="presenceList" class="presence-list"><div class="empty">No collaborators connected.</div></div>
+    <p class="share-note">Anyone with the room link can edit this room. Local editing keeps working if realtime disconnects.</p>
+  </div>
+</section>
+</div>
+<script src="./vendor/supabase.js"></script>
+<script type="module" src="./src/app-stable.js"></script>
+</body>
+</html>
