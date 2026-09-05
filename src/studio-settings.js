@@ -15,7 +15,7 @@ function hardStopRobloxMotion(){
   renderer.navKeys?.clear?.();renderer.navPointer=null;
   if(renderer.navFrame){cancelAnimationFrame(renderer.navFrame);renderer.navFrame=0;}
   leftStart=null;robloxBox=false;
-  const r=$('selectRect');if(r)r.classList.add('hidden');
+  const r=$('selectRect');if(r&&!r.classList.contains('hidden'))r.classList.add('hidden');
 }
 globalThis.__vexStopMotion=hardStopRobloxMotion;
 
@@ -113,7 +113,12 @@ function bindRobloxInput(){
   document.addEventListener('focusin',e=>{if(settings.controlsPreset==='roblox'&&!canvas.contains(e.target))hardStopRobloxMotion();},true);
   window.addEventListener('blur',hardStopRobloxMotion);
   document.addEventListener('visibilitychange',()=>{if(document.hidden)hardStopRobloxMotion();});
-  const observer=new MutationObserver(()=>{if(settings.controlsPreset!=='roblox')return;const modalOpen=document.querySelector('.settings-panel.open,.share-panel.open,.simulation-panel.open,.tutorial-panel.open,.tutorial-viewer.open');if(modalOpen)hardStopRobloxMotion();});
+  let modalWasOpen=false;
+  const observer=new MutationObserver(()=>{
+    const modalOpen=!!document.querySelector('.settings-panel.open,.share-panel.open,.simulation-panel.open,.tutorial-panel.open,.tutorial-viewer.open');
+    if(settings.controlsPreset==='roblox'&&modalOpen&&!modalWasOpen)hardStopRobloxMotion();
+    modalWasOpen=modalOpen;
+  });
   observer.observe(document.body,{subtree:true,attributes:true,attributeFilter:['class','aria-hidden']});
 }
 
