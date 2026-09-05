@@ -33,8 +33,9 @@ try{
   const settingsBtn=page.locator('#settingsBtn');await settingsBtn.waitFor({state:'visible',timeout:10000});await settingsBtn.click();
   await page.selectOption('#controlPreset','roblox');await page.selectOption('#materialStyle','glossy');
   if(!await page.locator('#proximitySnap').isChecked())throw new Error('proximity snapping should default on');
-  await page.locator('#snapDistance').fill('32');await page.locator('#snapAngle').fill('120');
-  await page.waitForFunction(()=>window.__vexRenderer?.navigationPreset==='roblox'&&window.__vexRenderer?.visualSettings?.materialStyle==='glossy'&&window.__vexFeatureSettings?.snapDistance===32,null,{timeout:5000});
+  await page.locator('#snapDistance').evaluate(el=>{el.value='32';el.dispatchEvent(new Event('input',{bubbles:true}));});
+  await page.locator('#snapAngle').evaluate(el=>{el.value='120';el.dispatchEvent(new Event('input',{bubbles:true}));});
+  await page.waitForFunction(()=>window.__vexRenderer?.navigationPreset==='roblox'&&window.__vexRenderer?.visualSettings?.materialStyle==='glossy'&&window.__vexFeatureSettings?.snapDistance===32&&window.__vexFeatureSettings?.snapAngle===120,null,{timeout:5000});
   await page.click('#doneSettingsBtn');
 
   const cameraBefore=await page.evaluate(()=>window.__vexRenderer.camera.position.toArray());await page.keyboard.down('w');await page.waitForTimeout(170);
