@@ -33,10 +33,10 @@ export function overallGearRatio(gears){
   return last/first;
 }
 
-export function driveMetrics({gears=[],inputRpm=100,motorTorqueNm=.2,motorCount=2,efficiency=.82,wheelDiameterMm=100,massKg=4,wheelCount=4,inclineDeg=0}={}){
-  const ratio=Math.max(.01,overallGearRatio(gears)),eff=clamp(efficiency,.05,1),motors=clamp(motorCount,1,16),diameter=clamp(wheelDiameterMm,20,400),mass=clamp(massKg,.1,100),wheels=clamp(wheelCount,1,16),rpm=(Number(inputRpm)||0)/ratio;
-  const wheelRadiusM=diameter/2000,speedMps=Math.abs(rpm)*Math.PI*(diameter/1000)/60,tractiveForceN=(Math.max(0,Number(motorTorqueNm)||0)*motors*ratio*eff)/wheelRadiusM,gradeForceN=mass*9.80665*Math.sin((Number(inclineDeg)||0)*Math.PI/180),netForceN=Math.max(0,tractiveForceN-gradeForceN),accelMps2=netForceN/mass,staticLoadPerWheelN=mass*9.80665/wheels;
-  return {ratio,outputRpm:rpm,speedMps,tractiveForceN,gradeForceN,netForceN,accelMps2,staticLoadPerWheelN,massKg:mass};
+export function driveMetrics({gears=[],inputRpm=100,motorTorqueNm=.2,motorCount=2,efficiency=.82,wheelDiameterMm=100,massKg=4,wheelCount=4,inclineDeg=0,tractionCoefficient=.8}={}){
+  const ratio=Math.max(.01,overallGearRatio(gears)),eff=clamp(efficiency,.05,1),motors=clamp(motorCount,1,16),diameter=clamp(wheelDiameterMm,20,400),mass=clamp(massKg,.1,100),wheels=clamp(wheelCount,1,16),mu=clamp(tractionCoefficient,.05,2),rpm=(Number(inputRpm)||0)/ratio;
+  const angle=(Number(inclineDeg)||0)*Math.PI/180,wheelRadiusM=diameter/2000,speedMps=Math.abs(rpm)*Math.PI*(diameter/1000)/60,motorForceN=(Math.max(0,Number(motorTorqueNm)||0)*motors*ratio*eff)/wheelRadiusM,normalForceN=mass*9.80665*Math.max(0,Math.cos(angle)),tractionLimitN=normalForceN*mu,tractiveForceN=Math.min(motorForceN,tractionLimitN),gradeForceN=mass*9.80665*Math.sin(angle),netForceN=Math.max(0,tractiveForceN-gradeForceN),accelMps2=netForceN/mass,staticLoadPerWheelN=normalForceN/wheels;
+  return {ratio,outputRpm:rpm,speedMps,motorForceN,tractionLimitN,tractiveForceN,gradeForceN,netForceN,accelMps2,staticLoadPerWheelN,massKg:mass,tractionCoefficient:mu};
 }
 
 export function simulationSummary(metrics){
@@ -46,6 +46,7 @@ export function simulationSummary(metrics){
     speedText:`${metrics.speedMps.toFixed(2)} m/s`,
     forceText:`${metrics.tractiveForceN.toFixed(1)} N`,
     accelText:`${metrics.accelMps2.toFixed(2)} m/s²`,
-    loadText:`${metrics.staticLoadPerWheelN.toFixed(1)} N / wheel`
+    loadText:`${metrics.staticLoadPerWheelN.toFixed(1)} N / wheel`,
+    tractionText:`${metrics.tractionLimitN.toFixed(1)} N max`
   };
 }
