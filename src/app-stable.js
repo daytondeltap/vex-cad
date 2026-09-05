@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { PartLibrary, geometryFromOcct, geometryToProjectData, geometryFromProjectData } from './render/meshLoader.js';
 import { SceneRenderer } from './render/sceneRenderer.js';
 import { History, command } from './core/history.js';
-import { compatible } from './core/snap.js';
+import { compatible, isConnector, isReceptacle, sameAttachment, connectorLength, receptacleDepth, findFreeConnectorOffset } from './core/snap.js';
 import { applyConstraints, makeFixedConstraint, convertToRevolute } from './core/solver.js';
 import { childConstraint, wouldCreateCycle } from './core/constraints.js';
 import { serializeProject, validateProject } from './core/project.js';
@@ -18,6 +18,7 @@ const library=new PartLibrary('./parts/');
 const importer=new CADImporter();
 let renderer=null,libraryReady=false,placement=null,syncQueued=false,autosaveTimer=0,collabTimer=0,suppressCollab=0;
 const remoteCursors=new Map();
+let editorClipboard=null,pasteSerial=0;
 
 function setStatus(msg,kind='info'){
   const el=$('status'); if(!el)return;
@@ -67,21 +68,94 @@ function scheduleSync({broadcast=true}={}){
     }catch(err){console.error(err);setStatus(`Render sync failed: ${err.message}`,'error');}
   });
 }
-function setSelection(ids){state.selection=new Set(ids.filter(id=>state.entities.has(id)));if(!renderer)return;renderer.setSelection(state.selection,state.entities);setupTransform();renderInspector();}
+function expandGroupedIds(ids){
+  const out=new Set();
+  for(const id of ids){
+    const e=state.entities.get(id);if(!e)continue;out.add(id);
+    if(e.groupId)for(const [otherId,other] of state.entities)if(other.groupId===e.groupId)out.add(otherId);
+  }
+  return [...out];
+}
+function setSelection(ids){state.selection=new Set(expandGroupedIds(ids));if(!renderer)return;renderer.setSelection(state.selection,state.entities);setupTransform();renderInspector();}
 
 function localAttachmentDef(e){return e.custom?[]:(library.get(e.partId)?.attachments||[]);}
 function worldAttachment(e,a){const m=new THREE.Matrix4().fromArray(e.matrix),p=new THREE.Vector3(...a.point).applyMatrix4(m),axis=new THREE.Vector3(...a.axis).transformDirection(m).normalize();return {...a,worldPoint:p.toArray(),worldAxis:axis.toArray()};}
-function allTargetAttachments(){const out=[];for(const e of state.entities.values()){if(e.hidden)continue;for(const a of localAttachmentDef(e))out.push({entity:e,local:a,world:worldAttachment(e,a)});}return out;}
+function attachmentConnections(entity,a){
+  const out=[];
+  for(const c of state.constraints){
+    if(c.parentId===entity.id&&sameAttachment(c.targetAttachment,a)){
+      const other=state.entities.get(c.childId);if(other&&c.sourceAttachment)out.push({constraint:c,other,otherAttachment:c.sourceAttachment});
+    }else if(c.childId===entity.id&&sameAttachment(c.sourceAttachment,a)){
+      const other=state.entities.get(c.parentId);if(other&&c.targetAttachment)out.push({constraint:c,other,otherAttachment:c.targetAttachment});
+    }
+  }
+  return out;
+}
+function isAttachmentOpen(entity,a){
+  if(!isReceptacle(a))return true;
+  return attachmentConnections(entity,a).length===0;
+}
+function connectorOccupancy(entity,a,world){
+  const axis=new THREE.Vector3(...world.worldAxis).normalize(),origin=new THREE.Vector3(...world.worldPoint),occupied=[];
+  for(const link of attachmentConnections(entity,a)){
+    if(!isReceptacle(link.otherAttachment))continue;
+    const otherDef=link.other.custom?null:library.get(link.other.partId),depth=receptacleDepth(otherDef,link.otherAttachment);
+    if(!(depth>0))continue;
+    const wp=worldAttachment(link.other,link.otherAttachment),center=new THREE.Vector3(...wp.worldPoint).sub(origin).dot(axis);
+    occupied.push({center,depth});
+  }
+  return occupied;
+}
+function allTargetAttachments(){
+  const out=[];
+  for(const e of state.entities.values()){
+    if(e.hidden)continue;
+    const def=e.custom?null:library.get(e.partId);
+    for(const a of localAttachmentDef(e)){
+      if(isReceptacle(a)&&!isAttachmentOpen(e,a))continue;
+      out.push({entity:e,def,local:a,world:worldAttachment(e,a)});
+    }
+  }
+  return out;
+}
 function makeSnapMatrix(source,targetWorld,spin=0){const sa=new THREE.Vector3(...source.axis).normalize(),ta=new THREE.Vector3(...targetWorld.worldAxis).normalize().negate(),q=new THREE.Quaternion().setFromUnitVectors(sa,ta);if(spin)q.premultiply(new THREE.Quaternion().setFromAxisAngle(ta,spin));const rp=new THREE.Vector3(...source.point).applyQuaternion(q),tp=new THREE.Vector3(...targetWorld.worldPoint),pos=tp.sub(rp);return new THREE.Matrix4().compose(pos,q,new THREE.Vector3(1,1,1));}
+function physicalSnapTarget(sourceDef,s,target){
+  const t=target.local,targetDef=target.def;
+  if(!compatible(s,t))return null;
+  const tw={...target.world,worldPoint:[...target.world.worldPoint]};
+  if(isConnector(s)&&isReceptacle(t)){
+    if(!isAttachmentOpen(target.entity,t))return null;
+    const length=connectorLength(sourceDef,s),depth=receptacleDepth(targetDef,t);
+    if(!(length>0&&depth>0))return null;
+    const slot=findFreeConnectorOffset(length,depth,[]);
+    if(slot==null)return null;
+    // The source connector axis will be opposite the target hole axis after
+    // alignment. Offset its center so the first beam occupies one end of the
+    // connector, leaving the real remaining pin length available.
+    const axis=new THREE.Vector3(...target.world.worldAxis).normalize();
+    tw.worldPoint=new THREE.Vector3(...target.world.worldPoint).addScaledVector(axis,slot).toArray();
+    return {targetWorld:tw,connectorLength:length,receptacleDepth:depth,slotOffset:slot};
+  }
+  if(isReceptacle(s)&&isConnector(t)){
+    const length=connectorLength(targetDef,t),depth=receptacleDepth(sourceDef,s);
+    if(!(length>0&&depth>0))return null;
+    const occupied=connectorOccupancy(target.entity,t,target.world),slot=findFreeConnectorOffset(length,depth,occupied);
+    if(slot==null)return null;
+    const axis=new THREE.Vector3(...target.world.worldAxis).normalize();
+    tw.worldPoint=new THREE.Vector3(...target.world.worldPoint).addScaledVector(axis,slot).toArray();
+    return {targetWorld:tw,connectorLength:length,receptacleDepth:depth,slotOffset:slot,occupied};
+  }
+  return {targetWorld:tw};
+}
 function bestSnap(partDef,freeMatrix){
   const cfg=globalThis.__vexFeatureSettings||{},sources=partDef?.attachments||[];if(!sources.length||cfg.proximitySnap===false)return null;
   const maxDistance=Math.max(4,Math.min(60,Number(cfg.snapDistance)||28)),maxAngle=Math.max(5,Math.min(180,Number(cfg.snapAngle)||110)),candidates=[];
   for(const t of allTargetAttachments())for(const s of sources){
-    if(!compatible(s,t.local))continue;
-    const currentPoint=new THREE.Vector3(...s.point).applyMatrix4(freeMatrix),targetPoint=new THREE.Vector3(...t.world.worldPoint),d=currentPoint.distanceTo(targetPoint);if(d>maxDistance)continue;
-    const currentAxis=new THREE.Vector3(...s.axis).transformDirection(freeMatrix).normalize(),targetAxis=new THREE.Vector3(...t.world.worldAxis).normalize(),dot=Math.min(1,Math.max(-1,Math.abs(currentAxis.dot(targetAxis)))),angle=THREE.MathUtils.radToDeg(Math.acos(dot));if(angle>maxAngle)continue;
-    const matrix=makeSnapMatrix(s,t.world,placement?.spin||0),pinHole=(s.type==='pin'&&t.local.type==='hole')||(s.type==='hole'&&t.local.type==='pin'),priority=(cfg.snapPinHolePriority!==false&&pinHole)?-8:0;
-    candidates.push({score:d+angle*.025+priority,distance:d,angle,matrix,source:s,target:t.local,targetEntity:t.entity,targetWorld:t.world,pinHole});
+    const physical=physicalSnapTarget(partDef,s,t);if(!physical)continue;
+    const currentPoint=new THREE.Vector3(...s.point).applyMatrix4(freeMatrix),targetPoint=new THREE.Vector3(...physical.targetWorld.worldPoint),d=currentPoint.distanceTo(targetPoint);if(d>maxDistance)continue;
+    const currentAxis=new THREE.Vector3(...s.axis).transformDirection(freeMatrix).normalize(),targetAxis=new THREE.Vector3(...t.world.worldAxis).normalize(),alignment=Math.min(1,Math.max(-1,Math.abs(currentAxis.dot(targetAxis)))),angle=THREE.MathUtils.radToDeg(Math.acos(alignment));if(angle>maxAngle)continue;
+    const matrix=makeSnapMatrix(s,physical.targetWorld,placement?.spin||0),pinHole=(s.type==='pin'&&t.local.type==='hole')||(s.type==='hole'&&t.local.type==='pin'),priority=(cfg.snapPinHolePriority!==false&&pinHole)?-8:0;
+    candidates.push({score:d+angle*.025+priority,distance:d,angle,matrix,source:s,target:t.local,targetEntity:t.entity,targetWorld:physical.targetWorld,pinHole,physical});
   }
   candidates.sort((a,b)=>a.score-b.score);return candidates[placement?.candidateIndex%candidates.length||0]||null;
 }
@@ -102,7 +176,47 @@ function setupTransform(){
 function createEntity(partId,matrix=IDENTITY.toArray(),custom=null){return {id:uuid(),partId,name:custom?.name||library.get(partId)?.name||'Part',matrix:[...matrix],hidden:false,locked:false,custom};}
 function addPartCommand(e,constraint=null){history.execute(command('Add part',()=>{state.entities.set(e.id,e);if(constraint&&!state.constraints.some(c=>c.id===constraint.id))state.constraints.push(constraint);setSelection([e.id]);scheduleSync();},()=>{state.entities.delete(e.id);state.constraints=state.constraints.filter(c=>c.id!==constraint?.id&&c.parentId!==e.id&&c.childId!==e.id);setSelection([]);scheduleSync();}));}
 function removeSelected(){const ids=[...state.selection];if(!ids.length)return;const ents=ids.map(id=>clone(state.entities.get(id))).filter(Boolean),related=state.constraints.filter(c=>ids.includes(c.parentId)||ids.includes(c.childId)).map(clone);history.execute(command('Delete parts',()=>{for(const id of ids)state.entities.delete(id);state.constraints=state.constraints.filter(c=>!ids.includes(c.parentId)&&!ids.includes(c.childId));setSelection([]);scheduleSync();},()=>{for(const e of ents)state.entities.set(e.id,e);for(const c of related)if(!state.constraints.some(x=>x.id===c.id))state.constraints.push(c);setSelection(ids);scheduleSync();}));}
-function duplicateSelected(){const created=[];for(const id of state.selection){const src=state.entities.get(id);if(!src)continue;const e=clone(src);e.id=uuid();e.matrix=new THREE.Matrix4().makeTranslation(12,12,0).multiply(new THREE.Matrix4().fromArray(e.matrix)).toArray();created.push(e);}if(!created.length)return;history.execute(command('Duplicate',()=>{for(const e of created)state.entities.set(e.id,e);setSelection(created.map(e=>e.id));scheduleSync();},()=>{for(const e of created)state.entities.delete(e.id);setSelection([]);scheduleSync();}));}
+function clipboardFromSelection(){
+  const ids=[...state.selection];if(!ids.length)return null;const selected=new Set(ids);
+  return {schema:1,entities:ids.map(id=>clone(state.entities.get(id))).filter(Boolean),constraints:state.constraints.filter(c=>selected.has(c.parentId)&&selected.has(c.childId)).map(clone)};
+}
+function cloneClipboardPackage(pkg,offset=12){
+  if(!pkg?.entities?.length)return null;
+  const idMap=new Map(pkg.entities.map(e=>[e.id,uuid()])),groupMap=new Map(),delta=new THREE.Matrix4().makeTranslation(offset,offset,0);
+  const entities=pkg.entities.map(raw=>{const e=clone(raw),oldGroup=e.groupId;e.id=idMap.get(raw.id);if(oldGroup){if(!groupMap.has(oldGroup))groupMap.set(oldGroup,`group:${uuid()}`);e.groupId=groupMap.get(oldGroup);}e.matrix=delta.clone().multiply(new THREE.Matrix4().fromArray(e.matrix)).toArray();return e;});
+  const constraints=(pkg.constraints||[]).filter(c=>idMap.has(c.parentId)&&idMap.has(c.childId)).map(raw=>{const c=clone(raw);c.id=uuid();c.parentId=idMap.get(raw.parentId);c.childId=idMap.get(raw.childId);return c;});
+  return {entities,constraints};
+}
+function pastePackage(pkg,{label='Paste',offset=12}={}){
+  const made=cloneClipboardPackage(pkg,offset);if(!made)return false;const ids=made.entities.map(e=>e.id);
+  history.execute(command(label,()=>{for(const e of made.entities){state.entities.set(e.id,e);if(e.custom?.geometry&&!state.customGeometries.has(e.partId))try{state.customGeometries.set(e.partId,geometryFromProjectData(e.custom.geometry));}catch{}}for(const c of made.constraints)if(!state.constraints.some(x=>x.id===c.id))state.constraints.push(c);setSelection(ids);scheduleSync();},()=>{for(const e of made.entities)state.entities.delete(e.id);state.constraints=state.constraints.filter(c=>!ids.includes(c.parentId)&&!ids.includes(c.childId));setSelection([]);scheduleSync();}));
+  return true;
+}
+function copySelected(){
+  const pkg=clipboardFromSelection();if(!pkg)return false;editorClipboard=clone(pkg);pasteSerial=0;setStatus(`Copied ${pkg.entities.length} part${pkg.entities.length===1?'':'s'}.`);
+  try{const text=`VEXCAD_CLIPBOARD_V1\n${JSON.stringify(pkg)}`;if(text.length<2_000_000)navigator.clipboard?.writeText(text).catch(()=>{});}catch{}
+  return true;
+}
+async function pasteClipboard(){
+  let pkg=editorClipboard;
+  if(!pkg&&navigator.clipboard?.readText)try{const text=await navigator.clipboard.readText();if(text.startsWith('VEXCAD_CLIPBOARD_V1\n'))pkg=JSON.parse(text.slice('VEXCAD_CLIPBOARD_V1\n'.length));}catch{}
+  if(!pkg){setStatus('Nothing from VEX CAD is available to paste.','warn');return;}
+  pasteSerial++;if(pastePackage(pkg,{label:'Paste',offset:12*pasteSerial}))setStatus(`Pasted ${pkg.entities.length} part${pkg.entities.length===1?'':'s'}.`);
+}
+function cutSelected(){if(copySelected())removeSelected();}
+function duplicateSelected(){const pkg=clipboardFromSelection();if(pkg&&pastePackage(pkg,{label:'Duplicate',offset:12}))setStatus(`Duplicated ${pkg.entities.length} part${pkg.entities.length===1?'':'s'}.`);}
+function groupSelected(){
+  const ids=[...state.selection];if(ids.length<2){setStatus('Select at least two parts to group.','warn');return;}
+  const before=new Map(ids.map(id=>[id,state.entities.get(id)?.groupId||null])),groupId=`group:${uuid()}`;
+  history.execute(command('Group',()=>{for(const id of ids){const e=state.entities.get(id);if(e)e.groupId=groupId;}setSelection(ids);scheduleSync();},()=>{for(const [id,g] of before){const e=state.entities.get(id);if(!e)continue;if(g)e.groupId=g;else delete e.groupId;}setSelection(ids);scheduleSync();}));
+  setStatus(`Grouped ${ids.length} parts.`);
+}
+function ungroupSelected(){
+  const ids=[...state.selection].filter(id=>state.entities.get(id)?.groupId);if(!ids.length){setStatus('Selection is not grouped.','warn');return;}
+  const before=new Map(ids.map(id=>[id,state.entities.get(id).groupId]));
+  history.execute(command('Ungroup',()=>{for(const id of ids){const e=state.entities.get(id);if(e)delete e.groupId;}setSelection(ids);scheduleSync();},()=>{for(const [id,g] of before){const e=state.entities.get(id);if(e)e.groupId=g;}setSelection(ids);scheduleSync();}));
+  setStatus(`Ungrouped ${ids.length} parts.`);
+}
 function fixedConstraintForSelection(){const ids=[...state.selection];if(ids.length!==2)return;const [parentId,childId]=ids;if(childConstraint(state.constraints,childId)){setStatus('Second selected part already has a driving constraint.','error');return;}if(wouldCreateCycle(state.constraints,parentId,childId)){setStatus('That constraint would create a cycle.','error');return;}const c=makeFixedConstraint(state.entities.get(parentId),state.entities.get(childId));history.execute(command('Create fixed constraint',()=>{state.constraints.push(c);scheduleSync();},()=>{state.constraints=state.constraints.filter(x=>x.id!==c.id);scheduleSync();}));}
 
 function beginPlacement(partId){if(!libraryReady){setStatus('Parts library is not ready yet.','warn');return;}const d=library.get(partId);if(!d)return;placement={partId,spin:0,candidate:null,candidateIndex:0,freeMatrix:new THREE.Matrix4(),lastPointer:null,requestId:0};$('placementHint').classList.remove('hidden');$('placementHint').textContent=`Placing ${d.name} · click to place · Q/E rotate · Tab cycle snap · Esc cancel`;setStatus('Move near a detected hole or compatible attachment to Proximity Snap.');}
@@ -115,7 +229,7 @@ function renderParts(){const el=$('partsList');if(!el)return;if(!libraryReady){e
 function renderConstraints(){const el=$('constraints');if(!state.constraints.length){el.className='constraints empty';el.textContent='No constraints';return;}el.className='constraints';el.innerHTML=state.constraints.map(c=>`<div class="constraint-card"><b>${c.type==='fixed'?'Fixed':'Revolute'}</b>${escapeHtml(entityName(state.entities.get(c.parentId)))} → ${escapeHtml(entityName(state.entities.get(c.childId)))}${c.type==='revolute'?` · ${c.angle||0}°`:''}</div>`).join('');}
 function renderInspector(){
   const el=$('inspector'),ids=[...state.selection];if(!ids.length){el.className='inspector empty';el.textContent='Select a part';return;}el.className='inspector';
-  if(ids.length>1){el.innerHTML=`<b>${ids.length} parts selected</b><div class="row" style="margin-top:10px"><button id="multiFix">Fix 1 → 2</button><button id="multiDup">Duplicate</button></div>`;$('multiFix').onclick=fixedConstraintForSelection;$('multiDup').onclick=duplicateSelected;return;}
+  if(ids.length>1){const grouped=ids.some(id=>state.entities.get(id)?.groupId);el.innerHTML=`<b>${ids.length} parts selected</b><div class="row" style="margin-top:10px"><button id="multiFix">Fix 1 → 2</button><button id="multiDup">Duplicate</button><button id="multiGroup">${grouped?'Regroup':'Group'}</button>${grouped?'<button id="multiUngroup">Ungroup</button>':''}</div><div class="library-meta inspector-meta">${grouped?'Grouped selection · Ctrl/Cmd+Shift+G to ungroup':'Ctrl/Cmd+G groups selection · Ctrl/Cmd+D duplicates'}</div>`;$('multiFix').onclick=fixedConstraintForSelection;$('multiDup').onclick=duplicateSelected;$('multiGroup').onclick=groupSelected;if($('multiUngroup'))$('multiUngroup').onclick=ungroupSelected;return;}
   const e=state.entities.get(ids[0]);if(!e){setSelection([]);return;}const def=e.custom?null:library.get(e.partId),tr=matrixTRS(e.matrix),driven=childConstraint(state.constraints,e.id),atts=def?.attachments||[],verified=atts.filter(a=>a.verified).length;
   el.innerHTML=`<b>${escapeHtml(entityName(e))}</b><div class="library-meta inspector-meta">${escapeHtml(def?.partNumber||'Imported CAD')} · ${verified}/${atts.length} verified axes</div>${driven?'<div class="constraint-card">Driven by a constraint. Detach it to move directly.</div>':''}<div class="field"><label>Position (mm)</label><div class="vec">${['X','Y','Z'].map((a,i)=>`<input data-pos="${i}" value="${tr.p.getComponent(i).toFixed(2)}" ${driven?'disabled':''} aria-label="${a}">`).join('')}</div></div><div class="field"><label>Rotation (deg)</label><div class="vec">${['X','Y','Z'].map((a,i)=>`<input data-rot="${i}" value="${tr.r[i].toFixed(1)}" ${driven?'disabled':''} aria-label="${a}">`).join('')}</div></div><div class="field row"><label><input id="lockToggle" type="checkbox" ${e.locked?'checked':''}/> Lock</label><label><input id="hideToggle" type="checkbox" ${e.hidden?'checked':''}/> Hide</label></div><div class="row"><button id="dupBtn">Duplicate</button><button id="deleteBtn">Delete</button><button id="isolateBtn">Isolate</button></div>${driven?constraintEditor(driven):''}`;
   const applyNumeric=()=>{const before=[...e.matrix],p=[...tr.p.toArray()],r=[...tr.r];for(const x of el.querySelectorAll('[data-pos]'))p[+x.dataset.pos]=finiteNumber(x.value,p[+x.dataset.pos]);for(const x of el.querySelectorAll('[data-rot]'))r[+x.dataset.rot]=finiteNumber(x.value,r[+x.dataset.rot]);const after=composeTRS(p,r);history.execute(command('Numeric transform',()=>{e.matrix=[...after];scheduleSync();},()=>{e.matrix=[...before];scheduleSync();}));};
@@ -162,7 +276,7 @@ function bindUI(){
   canvas.addEventListener('pointermove',e=>{const rect=canvas.getBoundingClientRect();if(rect.width&&rect.height)multiplayer.sendCursor((e.clientX-rect.left)/rect.width,(e.clientY-rect.top)/rect.height,state.selection);if(placement){updatePlacement(e);return;}if(box&&down){const x1=Math.min(down.x,e.clientX),y1=Math.min(down.y,e.clientY),x2=Math.max(down.x,e.clientX),y2=Math.max(down.y,e.clientY),r=$('selectRect');Object.assign(r.style,{left:`${x1}px`,top:`${y1}px`,width:`${x2-x1}px`,height:`${y2-y1}px`});}});
   canvas.addEventListener('pointerup',e=>{if(e.button!==0)return;try{if(canvas.hasPointerCapture?.(e.pointerId))canvas.releasePointerCapture(e.pointerId);}catch{}if(placement){commitPlacement();clearPointerState();return;}if(!down)return;const moved=Math.hypot(e.clientX-down.x,e.clientY-down.y);if(box){const rect={x1:Math.min(down.x,e.clientX),y1:Math.min(down.y,e.clientY),x2:Math.max(down.x,e.clientX),y2:Math.max(down.y,e.clientY)};$('selectRect').classList.add('hidden');renderer.orbit.enabled=true;box=false;setSelection(renderer.boxSelect(rect,state.entities));}else if(moved<5){const id=renderer.pick(e.clientX,e.clientY);if(id)setSelection(e.ctrlKey||e.metaKey?[...new Set([...state.selection,id])]:[id]);else setSelection([]);}down=null;});
   canvas.addEventListener('pointercancel',clearPointerState);window.addEventListener('blur',clearPointerState);
-  window.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('sharePanel').classList.contains('open')){closeSharePanel();return;}if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName))return;if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?history.redo():history.undo();return;}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){e.preventDefault();history.redo();return;}if(e.key==='Delete'||e.key==='Backspace')removeSelected();else if(e.key.toLowerCase()==='m')setMode('translate');else if(e.key.toLowerCase()==='r'&&!placement)setMode('rotate');else if(e.key.toLowerCase()==='f')renderer.fit([...state.selection],state.entities);else if(e.key==='Escape')cancelPlacement();else if(placement&&(e.key.toLowerCase()==='q'||e.key.toLowerCase()==='e')){placement.spin+=(e.key.toLowerCase()==='q'?-1:1)*Math.PI/2;placement.candidateIndex=0;refreshPlacement();}else if(placement&&e.key==='Tab'){e.preventDefault();placement.candidateIndex++;refreshPlacement();}});
+  window.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('sharePanel').classList.contains('open')){closeSharePanel();return;}if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName))return;const mod=e.ctrlKey||e.metaKey,key=e.key.toLowerCase();if(mod&&key==='z'){e.preventDefault();e.shiftKey?history.redo():history.undo();return;}if(mod&&key==='y'){e.preventDefault();history.redo();return;}if(mod&&key==='c'){e.preventDefault();copySelected();return;}if(mod&&key==='x'){e.preventDefault();cutSelected();return;}if(mod&&key==='v'){e.preventDefault();pasteClipboard();return;}if(mod&&key==='d'){e.preventDefault();duplicateSelected();return;}if(mod&&key==='a'){e.preventDefault();setSelection([...state.entities.keys()]);return;}if(mod&&key==='g'){e.preventDefault();e.shiftKey?ungroupSelected():groupSelected();return;}if(e.key==='Delete'||e.key==='Backspace')removeSelected();else if(key==='m')setMode('translate');else if(key==='r'&&!placement)setMode('rotate');else if(key==='f')renderer.fit([...state.selection],state.entities);else if(e.key==='Escape')cancelPlacement();else if(placement&&(key==='q'||key==='e')){placement.spin+=(key==='q'?-1:1)*Math.PI/2;placement.candidateIndex=0;refreshPlacement();}else if(placement&&e.key==='Tab'){e.preventDefault();placement.candidateIndex++;refreshPlacement();}});
 }
 
 function openSharePanel(){$('sharePanel').classList.add('open');$('sharePanel').setAttribute('aria-hidden','false');updateSharePanel();}
@@ -177,7 +291,7 @@ function renderRemoteCursor(p){if(!p?.actorId)return;let item=remoteCursors.get(
 function clearRemoteCursors(){for(const item of remoteCursors.values()){clearTimeout(item.timer);item.el.remove();}remoteCursors.clear();}
 
 function currentProjectSnapshot(){const p=serializeProject(state);if(renderer)for(const e of p.entities){const m=renderer.entityMatrices?.get(e.id);if(m)e.matrix=[...m];}return p;}
-function publishAppAPI(){globalThis.__vexAppAPI={getProject:currentProjectSnapshot,getRenderer:()=>renderer,getLibrary:()=>library,getPart:id=>library.get(id),getSelection:()=>[...state.selection],setStatus,scheduleSync:()=>scheduleSync({broadcast:false}),isLibraryReady:()=>libraryReady};}
+function publishAppAPI(){globalThis.__vexAppAPI={getProject:currentProjectSnapshot,getRenderer:()=>renderer,getLibrary:()=>library,getPart:id=>library.get(id),getSelection:()=>[...state.selection],select:ids=>setSelection(ids),copy:copySelected,paste:pasteClipboard,group:groupSelected,ungroup:ungroupSelected,duplicate:duplicateSelected,setStatus,scheduleSync:()=>scheduleSync({broadcast:false}),isLibraryReady:()=>libraryReady};}
 async function createRenderer(){
   const make=q=>new SceneRenderer($('viewport'),library,{quality:q,onContextLost:()=>setStatus('Graphics context lost. Your project is autosaved; waiting for GPU recovery…','error')});
   try{return make(state.quality);}catch(first){console.warn('Renderer init failed',first);if(state.quality!=='low'){state.quality='low';$('quality').value='low';try{return make('low');}catch(second){console.error(second);throw second;}}throw first;}
@@ -186,7 +300,7 @@ async function createRenderer(){
 async function boot(){
   globalThis.__vexBooted=true;clearTimeout(globalThis.__vexBootTimer);
   setStatus('Starting graphics…');
-  try{renderer=await createRenderer();publishAppAPI();$('quality').value=state.quality;bindUI();await renderer.sync(new Map(),state.customGeometries);$('perf').textContent=`WebGL · ${state.quality}`;setStatus('Graphics ready · loading parts library…');}
+  try{renderer=await createRenderer();renderer.transform?.setRotationSnap?.(Math.PI/2);publishAppAPI();$('quality').value=state.quality;bindUI();await renderer.sync(new Map(),state.customGeometries);$('perf').textContent=`WebGL · ${state.quality}`;setStatus('Graphics ready · loading parts library…');}
   catch(err){console.error(err);setStatus(`Graphics startup failed: ${err.message}`,'error');$('perf').textContent='GPU unavailable';$('libraryMeta').innerHTML='Graphics failed. Try Low quality, update browser/GPU drivers, or reload.';return;}
   const ok=await loadLibrary();publishAppAPI();
   if(ok){try{const room=multiplayer.parseRoomFromLocation();if(room){renderCollabStatus({state:'connecting',message:'Joining shared room…'});await multiplayer.autoJoin();renderer.fit([],state.entities);}}catch(err){console.error(err);renderCollabStatus({state:'error',message:`Live join failed: ${err.message}`});setStatus('Local editor ready; live room connection failed.','warn');}}
