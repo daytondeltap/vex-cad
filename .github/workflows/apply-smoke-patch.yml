@@ -1,0 +1,72 @@
+name: Apply editor smoke expansion
+
+on:
+  push:
+    paths:
+      - 'scripts/.editor-smoke-revision'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Expand browser release gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/browser-smoke.mjs')
+          s=p.read_text()
+          graphics="  checkpoint('graphics-ok');\n"
+          if "rotation-snap-ok" not in s:
+              assert s.count(graphics)==1
+              s=s.replace(graphics,graphics+"  const rotationSnap=await page.evaluate(()=>window.__vexRenderer?.transform?.rotationSnap);\n  if(Math.abs(rotationSnap-Math.PI/2)>1e-6)throw new Error(`expected 90-degree transform snapping, got ${rotationSnap}`);\n  checkpoint('rotation-snap-ok');\n")
+          placed="  checkpoint('part-placement-ok');\n"
+          if "clipboard-grouping-ok" not in s:
+              assert s.count(placed)==1
+              block=r'''  // Exercise editor chords while Roblox mode is active. The capture-phase
+  // navigation layer must yield Ctrl/Cmd shortcuts instead of treating A/D as WASD.
+  await page.keyboard.press('Control+D');
+  await page.waitForFunction(()=>/^2 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:7000});
+  await page.keyboard.press('Control+A');
+  await page.keyboard.press('Control+G');
+  await page.waitForFunction(()=>{const es=window.__vexAppAPI?.getProject?.().entities||[],g=es[0]?.groupId;return es.length===2&&!!g&&es.every(e=>e.groupId===g);},null,{timeout:5000});
+  await page.keyboard.press('Control+C');
+  await page.keyboard.press('Control+V');
+  await page.waitForFunction(()=>/^4 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:7000});
+  const groupState=await page.evaluate(()=>{const es=window.__vexAppAPI.getProject().entities,counts={};for(const e of es)if(e.groupId)counts[e.groupId]=(counts[e.groupId]||0)+1;return counts;});
+  const groupCounts=Object.values(groupState).sort((a,b)=>a-b);if(groupCounts.length!==2||groupCounts[0]!==2||groupCounts[1]!==2)throw new Error(`pasted groups were not remapped independently: ${JSON.stringify(groupState)}`);
+  await page.keyboard.press('Control+Z');
+  await page.waitForFunction(()=>/^2 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:7000});
+  await page.keyboard.press('Control+Y');
+  await page.waitForFunction(()=>/^4 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:7000});
+  await page.keyboard.press('Control+X');
+  await page.waitForFunction(()=>/^2 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:7000});
+  await page.keyboard.press('Control+Z');
+  await page.waitForFunction(()=>/^4 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:7000});
+  await page.keyboard.press('Control+Shift+G');
+  await page.waitForFunction(()=>{const es=window.__vexAppAPI?.getProject?.().entities||[],sel=new Set(window.__vexAppAPI?.getSelection?.()||[]);return sel.size===2&&es.filter(e=>sel.has(e.id)).every(e=>!e.groupId);},null,{timeout:5000});
+  const chordNavState=await page.evaluate(()=>({keys:[...(window.__vexRenderer?.navKeys||[])],navFrame:window.__vexRenderer?.navFrame||0}));
+  if(chordNavState.keys.length||chordNavState.navFrame)throw new Error(`Ctrl/Cmd editor chords leaked into Roblox movement: ${JSON.stringify(chordNavState)}`);
+  checkpoint('clipboard-grouping-ok');
+'''
+              s=s.replace(placed,placed+block)
+          p.write_text(s)
+          PY
+          node --check scripts/browser-smoke.mjs
+          node --test tests/*.test.mjs
+      - name: Commit smoke gate
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/browser-smoke.mjs
+          git diff --cached --quiet && exit 0
+          git commit -m 'test: gate grouping clipboard and rotation snapping'
+          git push origin HEAD:main
