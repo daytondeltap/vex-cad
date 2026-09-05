@@ -99,6 +99,10 @@ function bindRobloxInput(){
     if(recordingBinding){hardStopRobloxMotion();e.preventDefault();e.stopImmediatePropagation();if(e.key==='Escape'){recordingBinding=null;renderKeybinds();return;}const key=eventKey(e);update({bindings:{[recordingBinding]:key}});recordingBinding=null;renderKeybinds();return;}
     if(settings.controlsPreset!=='roblox')return;
     if(modalOpen()||typing()){hardStopRobloxMotion();return;}
+    // Editor shortcuts such as Ctrl/Cmd+A/D/G must not be consumed as WASD.
+    // Starting any modifier chord also releases existing fly motion so a
+    // shortcut can never leave Roblox navigation latched.
+    if(e.ctrlKey||e.metaKey||e.altKey){hardStopRobloxMotion();return;}
     if(e.key==='Shift'){renderer.setRobloxKey('fast',true);return;}
     const movement=movementActions.find(a=>keyMatches(e,settings.bindings[a]));if(movement){if((movement==='up'||movement==='down')&&placementActive())return;e.preventDefault();e.stopImmediatePropagation();renderer.setRobloxKey(movement,true);return;}
     if(e.repeat)return;
