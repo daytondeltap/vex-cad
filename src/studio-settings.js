@@ -6,7 +6,8 @@ const movementActions=['forward','back','left','right','up','down'];
 const labels={forward:'Forward',back:'Back',left:'Left',right:'Right',up:'Up',down:'Down',cycleTransform:'Cycle Move / Rotate',moveTool:'Move tool',rotateTool:'Rotate tool',fit:'Frame selection',delete:'Delete selection'};
 const prettyKey=k=>k.length===1?k.toUpperCase():k.replace('arrow','Arrow ').replace('delete','Delete').replace('backspace','Backspace').replace('space','Space');
 const placementActive=()=>!$('placementHint')?.classList.contains('hidden');
-const typing=()=>['INPUT','SELECT','TEXTAREA','BUTTON'].includes(document.activeElement?.tagName)||document.activeElement?.isContentEditable;
+const modalOpen=()=>!!document.querySelector('.settings-panel.open,.share-panel.open,.simulation-panel.open,.tutorial-panel.open,.tutorial-viewer.open');
+const typing=()=>['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName)||document.activeElement?.isContentEditable;
 
 function publishSettings(){globalThis.__vexFeatureSettings=settings;window.dispatchEvent(new CustomEvent('vex-settings-changed',{detail:settings}));}
 function hardStopRobloxMotion(){
@@ -72,7 +73,7 @@ function update(patch){settings=saveSettings({...settings,...patch,bindings:{...
 function applySettings(){if(renderer){renderer.applyVisualSettings(settings);renderer.setCameraSettings(settings);renderer.setNavigationPreset(settings.controlsPreset);}publishSettings();updateFooter();}
 function updateFooter(){const footer=document.querySelector('footer span:last-child');if(!footer)return;footer.textContent=settings.controlsPreset==='roblox'?`${prettyKey(settings.bindings.cycleTransform)} cycle tool · RMB look · WASD fly · MMB pan · LMB drag select`:'Shift+drag box select · Esc cancel · Delete remove · M/R transform';}
 function openSettings(){hardStopRobloxMotion();$('settingsPanel').classList.add('open');$('settingsPanel').setAttribute('aria-hidden','false');syncUI();}
-function closeSettings(){hardStopRobloxMotion();recordingBinding=null;$('settingsPanel')?.classList.remove('open');$('settingsPanel')?.setAttribute('aria-hidden','true');renderKeybinds();}
+function closeSettings(){hardStopRobloxMotion();recordingBinding=null;const panel=$('settingsPanel');if(panel?.contains(document.activeElement))document.activeElement?.blur?.();panel?.classList.remove('open');panel?.setAttribute('aria-hidden','true');renderKeybinds();}
 
 function clonePointer(type,e,overrides={}){return new PointerEvent(type,{bubbles:true,cancelable:true,composed:true,pointerId:e.pointerId,pointerType:e.pointerType,isPrimary:e.isPrimary,clientX:overrides.clientX??e.clientX,clientY:overrides.clientY??e.clientY,screenX:e.screenX,screenY:e.screenY,button:overrides.button??e.button,buttons:overrides.buttons??e.buttons,shiftKey:overrides.shiftKey??e.shiftKey,ctrlKey:e.ctrlKey,metaKey:e.metaKey,altKey:e.altKey,pressure:e.pressure});}
 function bindRobloxInput(){
@@ -97,7 +98,7 @@ function bindRobloxInput(){
   window.addEventListener('keydown',e=>{
     if(recordingBinding){hardStopRobloxMotion();e.preventDefault();e.stopImmediatePropagation();if(e.key==='Escape'){recordingBinding=null;renderKeybinds();return;}const key=eventKey(e);update({bindings:{[recordingBinding]:key}});recordingBinding=null;renderKeybinds();return;}
     if(settings.controlsPreset!=='roblox')return;
-    if(typing()){hardStopRobloxMotion();return;}
+    if(modalOpen()||typing()){hardStopRobloxMotion();return;}
     if(e.key==='Shift'){renderer.setRobloxKey('fast',true);return;}
     const movement=movementActions.find(a=>keyMatches(e,settings.bindings[a]));if(movement){if((movement==='up'||movement==='down')&&placementActive())return;e.preventDefault();e.stopImmediatePropagation();renderer.setRobloxKey(movement,true);return;}
     if(e.repeat)return;
@@ -115,9 +116,9 @@ function bindRobloxInput(){
   document.addEventListener('visibilitychange',()=>{if(document.hidden)hardStopRobloxMotion();});
   let modalWasOpen=false;
   const observer=new MutationObserver(()=>{
-    const modalOpen=!!document.querySelector('.settings-panel.open,.share-panel.open,.simulation-panel.open,.tutorial-panel.open,.tutorial-viewer.open');
-    if(settings.controlsPreset==='roblox'&&modalOpen&&!modalWasOpen)hardStopRobloxMotion();
-    modalWasOpen=modalOpen;
+    const open=modalOpen();
+    if(settings.controlsPreset==='roblox'&&open&&!modalWasOpen)hardStopRobloxMotion();
+    modalWasOpen=open;
   });
   observer.observe(document.body,{subtree:true,attributes:true,attributeFilter:['class','aria-hidden']});
 }
