@@ -34,6 +34,9 @@ try{
   const graphics=await page.evaluate(()=>{const r=window.__vexRenderer?.renderer,c=r?.domElement,gl=r?.getContext?.();return {width:c?.width||0,height:c?.height||0,hasRenderer:!!r,hasContext:!!gl,contextLost:gl?.isContextLost?.()??true};});
   if(graphics.width<10||graphics.height<10||!graphics.hasRenderer||!graphics.hasContext||graphics.contextLost)throw new Error(`invalid graphics canvas ${JSON.stringify(graphics)}`);
   checkpoint('graphics-ok');
+  const rotationSnap=await page.evaluate(()=>window.__vexRenderer?.transform?.rotationSnap);
+  if(Math.abs(rotationSnap-Math.PI/2)>1e-6)throw new Error(`expected 90-degree transform snapping, got ${rotationSnap}`);
+  checkpoint('rotation-snap-ok');
 
   const settingsBtn=page.locator('#settingsBtn');await settingsBtn.waitFor({state:'visible',timeout:10000});await settingsBtn.click();
   await page.waitForFunction(()=>document.querySelector('#settingsPanel')?.classList.contains('open'),null,{timeout:5000});
@@ -65,6 +68,32 @@ try{
   await page.waitForFunction(()=>/^1 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:12000});
   checkpoint('part-placement-ok');
 
+  // Verify Ctrl/Cmd editor chords while Roblox navigation is active. These
+  // must never be interpreted as WASD movement in the capture-phase handler.
+  await page.keyboard.press('Control+D');
+  await page.waitForFunction(()=>/^2 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:7000});
+  await page.keyboard.press('Control+A');
+  await page.keyboard.press('Control+G');
+  await page.waitForFunction(()=>{const es=window.__vexAppAPI?.getProject?.().entities||[],g=es[0]?.groupId;return es.length===2&&!!g&&es.every(e=>e.groupId===g);},null,{timeout:5000});
+  await page.keyboard.press('Control+C');
+  await page.keyboard.press('Control+V');
+  await page.waitForFunction(()=>/^4 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:7000});
+  const groupState=await page.evaluate(()=>{const es=window.__vexAppAPI.getProject().entities,counts={};for(const e of es)if(e.groupId)counts[e.groupId]=(counts[e.groupId]||0)+1;return counts;});
+  const groupCounts=Object.values(groupState).sort((a,b)=>a-b);if(groupCounts.length!==2||groupCounts[0]!==2||groupCounts[1]!==2)throw new Error(`pasted groups were not remapped independently: ${JSON.stringify(groupState)}`);
+  await page.keyboard.press('Control+Z');
+  await page.waitForFunction(()=>/^2 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:7000});
+  await page.keyboard.press('Control+Y');
+  await page.waitForFunction(()=>/^4 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:7000});
+  await page.keyboard.press('Control+X');
+  await page.waitForFunction(()=>/^2 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:7000});
+  await page.keyboard.press('Control+Z');
+  await page.waitForFunction(()=>/^4 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:7000});
+  await page.keyboard.press('Control+Shift+G');
+  await page.waitForFunction(()=>{const es=window.__vexAppAPI?.getProject?.().entities||[],sel=new Set(window.__vexAppAPI?.getSelection?.()||[]);return sel.size===2&&es.filter(e=>sel.has(e.id)).every(e=>!e.groupId);},null,{timeout:5000});
+  const chordNavState=await page.evaluate(()=>({keys:[...(window.__vexRenderer?.navKeys||[])],navFrame:window.__vexRenderer?.navFrame||0}));
+  if(chordNavState.keys.length||chordNavState.navFrame)throw new Error(`Ctrl/Cmd editor chords leaked into Roblox movement: ${JSON.stringify(chordNavState)}`);
+  checkpoint('clipboard-grouping-ok');
+
   await page.locator('#snapshotBtn').waitFor({state:'visible',timeout:10000});await clickDom('#snapshotBtn');
   await page.waitForFunction(()=>/Snapshot\s*·\s*1/.test(document.querySelector('#snapshotBtn')?.textContent||''),null,{timeout:5000});
   await clickDom('#tutorialBtn');await page.waitForFunction(()=>document.querySelector('#tutorialPanel')?.classList.contains('open'),null,{timeout:5000});
@@ -84,7 +113,7 @@ try{
   const status=await page.locator('#status').innerText();
   if(/failed|error/i.test(status))throw new Error(`editor status after advanced feature smoke: ${status}`);
   if(errors.some(x=>/Failed to resolve module|Cannot find module|404.*(three|parts|app-stable|studio-settings|advanced-features)|Parts manifest HTTP|Invalid VEX mesh|Not a VEX CAD tutorial|CONTEXT_LOST_WEBGL|existing context of a different type/i.test(x)))throw new Error(errors.join('\n'));
-  console.log(JSON.stringify({ok:true,meta,compression:manifest.meshCompression,graphics,status,panelState,cameraBefore,cameraMoving,cameraStopped1,cameraStopped2,navState,errors,badResponses,failedRequests}));
+  console.log(JSON.stringify({ok:true,meta,compression:manifest.meshCompression,graphics,status,panelState,cameraBefore,cameraMoving,cameraStopped1,cameraStopped2,navState,groupState,chordNavState,rotationSnap,errors,badResponses,failedRequests}));
 } catch(err){
   let snap={};try{snap=await snapshot();}catch{}
   console.error('VEX_SMOKE_DIAGNOSTICS',JSON.stringify({snap,errors,badResponses,failedRequests},null,2));
