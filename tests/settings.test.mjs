@@ -17,6 +17,14 @@ test('settings normalization rejects unknown render modes',()=>{
   assert.equal(s.shadowMode,'auto');
 });
 
+test('proximity snapping settings clamp and can be disabled',()=>{
+  const s=normalizeSettings({proximitySnap:false,snapDistance:999,snapAngle:-5,snapPinHolePriority:false});
+  assert.equal(s.proximitySnap,false);
+  assert.equal(s.snapDistance,60);
+  assert.equal(s.snapAngle,5);
+  assert.equal(s.snapPinHolePriority,false);
+});
+
 test('key matching is case insensitive and handles space',()=>{
   assert.equal(keyMatches({key:'R'},'r'),true);
   assert.equal(keyMatches({key:' '},'space'),true);
