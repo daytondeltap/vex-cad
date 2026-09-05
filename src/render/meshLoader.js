@@ -14,6 +14,12 @@ async function fetchWithTimeout(url,{timeout=12000,cache='no-store'}={}){
   }finally{clearTimeout(timer);}
 }
 
+async function gunzip(buffer){
+  if(typeof DecompressionStream!=='function')throw new Error('This browser cannot decompress the optimized VEX mesh format');
+  const stream=new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return await new Response(stream).arrayBuffer();
+}
+
 export class PartLibrary {
   constructor(base='./parts/'){
     this.base=new URL(base,APP_ROOT).href;
@@ -61,7 +67,8 @@ export class PartLibrary {
     this.geometryCache.set(id,promise); return promise;
   }
   async #loadVxm(url){
-    const r=await fetchWithTimeout(url,{timeout:18000,cache:'force-cache'}); if(!r.ok)throw new Error(`Mesh HTTP ${r.status}`); const b=await r.arrayBuffer();
+    const r=await fetchWithTimeout(url,{timeout:18000,cache:'force-cache'}); if(!r.ok)throw new Error(`Mesh HTTP ${r.status}`); let b=await r.arrayBuffer();
+    if(url.pathname.endsWith('.gz'))b=await gunzip(b);
     if(b.byteLength<36)throw new Error('VEX mesh is truncated');
     const dv=new DataView(b),magic=String.fromCharCode(...new Uint8Array(b,0,4)); if(magic!=='VXM1')throw new Error('Invalid VEX mesh');
     const vc=dv.getUint32(4,true),ic=dv.getUint32(8,true);
