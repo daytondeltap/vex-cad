@@ -5,7 +5,7 @@ const finite3=v=>Array.isArray(v)&&v.length===3&&v.every(Number.isFinite);
 
 export function serializeProject(state){
   return {schema:PROJECT_SCHEMA,name:state.projectName||'Untitled',createdBy:'VEX CAD',entities:[...state.entities.values()].map(e=>({
-    id:e.id,partId:e.partId,name:e.name,matrix:[...e.matrix],hidden:!!e.hidden,locked:!!e.locked,custom:e.custom||null
+    id:e.id,partId:e.partId,name:e.name,matrix:[...e.matrix],hidden:!!e.hidden,locked:!!e.locked,groupId:e.groupId||null,custom:e.custom||null
   })),constraints:state.constraints.map(c=>structuredClone(c)),settings:{quality:state.quality||'balanced'}};
 }
 
@@ -31,6 +31,7 @@ export function validateProject(p){
     if(!e||typeof e.id!=='string'||!e.id||typeof e.partId!=='string'||!e.partId||!finiteMatrix(e.matrix))throw new Error('Invalid entity');
     if(ids.has(e.id))throw new Error('Duplicate entity ID');ids.add(e.id);
     if(e.name!=null&&typeof e.name!=='string')throw new Error(`Invalid entity name on ${e.id}`);
+    if(e.groupId!=null&&(typeof e.groupId!=='string'||!e.groupId||e.groupId.length>120))throw new Error(`Invalid group ID on ${e.id}`);
     validateCustom(e.custom,e.id);
   }
 
