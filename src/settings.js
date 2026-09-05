@@ -9,6 +9,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   moveSpeed: 150,
   panSensitivity: 1,
   invertY: false,
+  proximitySnap: true,
+  snapDistance: 28,
+  snapAngle: 110,
+  snapPinHolePriority: true,
   bindings: Object.freeze({
     forward: 'w',
     back: 's',
@@ -50,6 +54,10 @@ export function normalizeSettings(raw={}){
     moveSpeed: clamp(raw.moveSpeed,20,800,DEFAULT_SETTINGS.moveSpeed),
     panSensitivity: clamp(raw.panSensitivity,.2,3,DEFAULT_SETTINGS.panSensitivity),
     invertY: !!raw.invertY,
+    proximitySnap: raw.proximitySnap!==false,
+    snapDistance: clamp(raw.snapDistance,4,60,DEFAULT_SETTINGS.snapDistance),
+    snapAngle: clamp(raw.snapAngle,5,180,DEFAULT_SETTINGS.snapAngle),
+    snapPinHolePriority: raw.snapPinHolePriority!==false,
     bindings
   };
 }
