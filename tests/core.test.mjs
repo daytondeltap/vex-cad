@@ -1,6 +1,6 @@
 import test from 'node:test'; import assert from 'node:assert/strict';
 import {History,command} from '../src/core/history.js';
-import {compatible,rankSnapCandidates} from '../src/core/snap.js';
+import {compatible,rankSnapCandidates,projectedSpan,connectorLength,receptacleDepth,findFreeConnectorOffset,canFitConnector,sameAttachment} from '../src/core/snap.js';
 import {wouldCreateCycle} from '../src/core/constraints.js';
 import {serializeProject,validateProject} from '../src/core/project.js';
 
@@ -9,8 +9,16 @@ const entity=(id,partId='p')=>({id,partId,name:id,matrix:identity(),hidden:false
 
 test('history undo redo',()=>{let n=0;const h=new History();h.execute(command('x',()=>n++,()=>n--));assert.equal(n,1);h.undo();assert.equal(n,0);h.redo();assert.equal(n,1)});
 test('snap compatibility/ranking',()=>{assert.equal(compatible({type:'pin'},{type:'hole'}),true);const r=rankSnapCandidates([{type:'pin',point:[0,0,0],axis:[1,0,0]}],[{type:'hole',point:[2,0,0],axis:[-1,0,0]}],5);assert.equal(r.length,1);assert.equal(r[0].distance,2)});
+test('bare beam receptacles cannot connect directly',()=>{assert.equal(compatible({type:'hole'},{type:'hole'}),false);assert.equal(compatible({type:'socket'},{type:'socket'}),false);assert.equal(compatible({type:'hole'},{type:'pin'}),true);assert.equal(compatible({type:'pin'},{type:'hole'}),true)});
+test('connector geometry span distinguishes real pin lengths',()=>{const short={bbox:[[-3,-3,-6.139],[3,3,6.139]]},medium={bbox:[[-3,-3,-12.489],[3,3,6.139]]},long={bbox:[[-3,-3,-18.839],[3,3,6.139]]},pin={type:'pin',point:[0,0,0],axis:[0,0,1]};assert.ok(Math.abs(connectorLength(short,pin)-12.278)<.01);assert.ok(Math.abs(connectorLength(medium,pin)-18.628)<.01);assert.ok(Math.abs(connectorLength(long,pin)-24.978)<.01)});
+test('beam hole depth uses structural thickness instead of whole long bbox',()=>{const beam={bbox:[[-100,-6.2,-3.05],[100,6.2,3.05]]};assert.equal(receptacleDepth(beam,{type:'hole',axis:[1,0,0]}),6.35);assert.ok(Math.abs(receptacleDepth(beam,{type:'hole',axis:[0,0,1]})-6.1)<.001)});
+test('short pin fits two beam layers but not three',()=>{const L=12.278,D=6.1;const first=findFreeConnectorOffset(L,D,[]);assert.notEqual(first,null);const second=findFreeConnectorOffset(L,D,[{center:first,depth:D}]);assert.notEqual(second,null);const third=findFreeConnectorOffset(L,D,[{center:first,depth:D},{center:second,depth:D}]);assert.equal(third,null);assert.equal(canFitConnector(L,[D],D),true);assert.equal(canFitConnector(L,[D,D],D),false)});
+test('medium and long pins expose additional real layers',()=>{const D=6.1;assert.equal(canFitConnector(18.628,[D,D],D),true);assert.equal(canFitConnector(18.628,[D,D,D],D),false);assert.equal(canFitConnector(24.978,[D,D,D],D),true);assert.equal(canFitConnector(24.978,[D,D,D,D],D),false)});
+test('attachment identity tolerates reversed physical axes',()=>{assert.equal(sameAttachment({type:'hole',point:[1,2,3],axis:[0,0,1]},{type:'hole',point:[1.02,2,3],axis:[0,0,-1]}),true)});
 test('constraint cycle helper',()=>{const cs=[{parentId:'a',childId:'b'},{parentId:'b',childId:'c'}];assert.equal(wouldCreateCycle(cs,'c','a'),true);assert.equal(wouldCreateCycle(cs,'a','d'),false)});
 test('project roundtrip validates',()=>{const state={entities:new Map([['a',entity('a')]]),constraints:[],quality:'low'};assert.equal(validateProject(serializeProject(state)).entities.length,1)});
+test('project roundtrip preserves group ids',()=>{const e=entity('a');e.groupId='group:test';const state={entities:new Map([['a',e]]),constraints:[],quality:'low'};assert.equal(validateProject(serializeProject(state)).entities[0].groupId,'group:test')});
+test('project rejects invalid group id',()=>{const p={schema:2,name:'bad',entities:[entity('a')],constraints:[],settings:{quality:'balanced'}};p.entities[0].groupId='';assert.throws(()=>validateProject(p),/Invalid group ID/)});
 test('project rejects non-finite matrices',()=>{const p={schema:2,name:'bad',entities:[entity('a')],constraints:[],settings:{quality:'balanced'}};p.entities[0].matrix[0]=Infinity;assert.throws(()=>validateProject(p),/Invalid entity/)});
 test('project rejects dangling constraints',()=>{const p={schema:2,name:'bad',entities:[entity('a')],constraints:[{id:'c',type:'fixed',parentId:'a',childId:'missing',relativeMatrix:identity()}],settings:{quality:'balanced'}};assert.throws(()=>validateProject(p),/references invalid entities/)});
 test('project rejects multiple drivers',()=>{const p={schema:2,name:'bad',entities:[entity('a'),entity('b'),entity('c')],constraints:[{id:'c1',type:'fixed',parentId:'a',childId:'c',relativeMatrix:identity()},{id:'c2',type:'fixed',parentId:'b',childId:'c',relativeMatrix:identity()}],settings:{quality:'balanced'}};assert.throws(()=>validateProject(p),/more than one driving constraint/)});
