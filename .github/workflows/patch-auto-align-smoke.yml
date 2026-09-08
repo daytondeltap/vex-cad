@@ -1,0 +1,38 @@
+name: Patch Auto Align smoke gate
+
+on:
+  push:
+    paths:
+      - 'scripts/.run-auto-align-smoke'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Add Auto Align browser regression
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/browser-smoke.mjs')
+          s=p.read_text()
+          old="""  await page.keyboard.press('Control+A');\n  await page.keyboard.press('Control+G');\n"""
+          new="""  await page.keyboard.press('Control+A');\n  if(await page.locator('#autoAlignBtn').isDisabled())throw new Error('Auto Align should enable for exactly two selected parts');\n  await page.keyboard.press('Control+Shift+A');\n  await page.waitForFunction(()=>document.querySelector('#autoAlignBtn')?.classList.contains('active')&&/Auto Align · 1 of 2/.test(document.querySelector('#placementHint')?.textContent||''),null,{timeout:5000});\n  const alignNavState=await page.evaluate(()=>({keys:[...(window.__vexRenderer?.navKeys||[])],navFrame:window.__vexRenderer?.navFrame||0}));\n  if(alignNavState.keys.length||alignNavState.navFrame)throw new Error(`Auto Align shortcut leaked into Roblox movement: ${JSON.stringify(alignNavState)}`);\n  await page.keyboard.press('Escape');\n  await page.waitForFunction(()=>!document.querySelector('#autoAlignBtn')?.classList.contains('active')&&document.querySelector('#placementHint')?.classList.contains('hidden'),null,{timeout:5000});\n  checkpoint('auto-align-command-ok');\n  await page.keyboard.press('Control+G');\n"""
+          if s.count(old)!=1: raise SystemExit(f'expected Auto Align smoke insertion point once, got {s.count(old)}')
+          p.write_text(s.replace(old,new,1))
+          PY
+          node --check scripts/browser-smoke.mjs
+          node --test tests/*.test.mjs
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/browser-smoke.mjs
+          git commit -m 'test: exercise Auto Align command in browser smoke'
+          git push origin HEAD:main
