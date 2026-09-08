@@ -73,6 +73,14 @@ try{
   await page.keyboard.press('Control+D');
   await page.waitForFunction(()=>/^2 parts/.test(document.querySelector('#stats')?.textContent||''),null,{timeout:7000});
   await page.keyboard.press('Control+A');
+  if(await page.locator('#autoAlignBtn').isDisabled())throw new Error('Auto Align should enable for exactly two selected parts');
+  await page.keyboard.press('Control+Shift+A');
+  await page.waitForFunction(()=>document.querySelector('#autoAlignBtn')?.classList.contains('active')&&/Auto Align · 1 of 2/.test(document.querySelector('#placementHint')?.textContent||''),null,{timeout:5000});
+  const alignNavState=await page.evaluate(()=>({keys:[...(window.__vexRenderer?.navKeys||[])],navFrame:window.__vexRenderer?.navFrame||0}));
+  if(alignNavState.keys.length||alignNavState.navFrame)throw new Error(`Auto Align shortcut leaked into Roblox movement: ${JSON.stringify(alignNavState)}`);
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(()=>!document.querySelector('#autoAlignBtn')?.classList.contains('active')&&document.querySelector('#placementHint')?.classList.contains('hidden'),null,{timeout:5000});
+  checkpoint('auto-align-command-ok');
   await page.keyboard.press('Control+G');
   await page.waitForFunction(()=>{const es=window.__vexAppAPI?.getProject?.().entities||[],g=es[0]?.groupId;return es.length===2&&!!g&&es.every(e=>e.groupId===g);},null,{timeout:5000});
   await page.keyboard.press('Control+C');
