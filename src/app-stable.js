@@ -18,7 +18,7 @@ const library=new PartLibrary('./parts/');
 const importer=new CADImporter();
 let renderer=null,libraryReady=false,placement=null,syncQueued=false,autosaveTimer=0,collabTimer=0,suppressCollab=0;
 const remoteCursors=new Map();
-let editorClipboard=null,pasteSerial=0;
+let editorClipboard=null,pasteSerial=0,autoAlign=null;
 
 function setStatus(msg,kind='info'){
   const el=$('status'); if(!el)return;
@@ -76,7 +76,7 @@ function expandGroupedIds(ids){
   }
   return [...out];
 }
-function setSelection(ids){state.selection=new Set(expandGroupedIds(ids));if(!renderer)return;renderer.setSelection(state.selection,state.entities);setupTransform();renderInspector();}
+function setSelection(ids){if(autoAlign)cancelAutoAlign(true);state.selection=new Set(expandGroupedIds(ids));if(!renderer)return;renderer.setSelection(state.selection,state.entities);setupTransform();renderInspector();updateAutoAlignButton();}
 
 function localAttachmentDef(e){return e.custom?[]:(library.get(e.partId)?.attachments||[]);}
 function worldAttachment(e,a){const m=new THREE.Matrix4().fromArray(e.matrix),p=new THREE.Vector3(...a.point).applyMatrix4(m),axis=new THREE.Vector3(...a.axis).transformDirection(m).normalize();return {...a,worldPoint:p.toArray(),worldAxis:axis.toArray()};}
@@ -219,7 +219,78 @@ function ungroupSelected(){
 }
 function fixedConstraintForSelection(){const ids=[...state.selection];if(ids.length!==2)return;const [parentId,childId]=ids;if(childConstraint(state.constraints,childId)){setStatus('Second selected part already has a driving constraint.','error');return;}if(wouldCreateCycle(state.constraints,parentId,childId)){setStatus('That constraint would create a cycle.','error');return;}const c=makeFixedConstraint(state.entities.get(parentId),state.entities.get(childId));history.execute(command('Create fixed constraint',()=>{state.constraints.push(c);scheduleSync();},()=>{state.constraints=state.constraints.filter(x=>x.id!==c.id);scheduleSync();}));}
 
-function beginPlacement(partId){if(!libraryReady){setStatus('Parts library is not ready yet.','warn');return;}const d=library.get(partId);if(!d)return;placement={partId,spin:0,candidate:null,candidateIndex:0,freeMatrix:new THREE.Matrix4(),lastPointer:null,requestId:0};$('placementHint').classList.remove('hidden');$('placementHint').textContent=`Placing ${d.name} · click to place · Q/E rotate · Tab cycle snap · Esc cancel`;setStatus('Move near a detected hole or compatible attachment to Proximity Snap.');}
+function updateAutoAlignButton(){
+  const btn=$('autoAlignBtn');if(!btn)return;
+  btn.disabled=state.selection.size!==2||!!placement;
+  btn.classList.toggle('active',!!autoAlign);btn.setAttribute('aria-pressed',autoAlign?'true':'false');
+}
+function autoAlignAttachments(e){return localAttachmentDef(e).filter(a=>Array.isArray(a?.point)&&Array.isArray(a?.axis));}
+function autoAlignHint(text){const hint=$('placementHint');if(!hint)return;hint.classList.remove('hidden');hint.textContent=text;}
+function renderAutoAlignMarkers(){
+  if(!autoAlign||!renderer)return;
+  const markers=[];
+  for(const id of autoAlign.ids){const e=state.entities.get(id);if(!e)continue;for(const a of autoAlignAttachments(e)){const selected=autoAlign.first?.entityId===id&&sameAttachment(autoAlign.first.attachment,a);markers.push({point:worldAttachment(e,a).worldPoint,color:selected?0x5de397:undefined});}}
+  renderer.setMarkers(markers);
+}
+function cancelAutoAlign(quiet=false){
+  if(!autoAlign)return false;autoAlign=null;renderer?.setMarkers([]);const hint=$('placementHint');hint?.classList.add('hidden');if(renderer){renderer.orbit.enabled=renderer.navigationPreset==='standard';setupTransform();}updateAutoAlignButton();if(!quiet)setStatus('Auto Align cancelled.');return true;
+}
+function startAutoAlign(){
+  if(autoAlign){cancelAutoAlign();return;}
+  const ids=[...state.selection];if(ids.length!==2){setStatus('Auto Align needs exactly two selected parts. Ctrl/Cmd-click the second part, then try again.','warn');return;}
+  const [a,b]=ids.map(id=>state.entities.get(id));if(!a||!b)return;
+  if(a.custom||b.custom){setStatus('Auto Align currently needs catalog parts with detected connection points.','warn');return;}
+  if(!autoAlignAttachments(a).length||!autoAlignAttachments(b).length){setStatus('One selected part has no detected connection points.','warn');return;}
+  cancelPlacement();autoAlign={ids,first:null};
+  renderer.transform.enabled=false;renderer.transformHelper.visible=false;renderer.orbit.enabled=false;
+  autoAlignHint('Auto Align · 1 of 2 · click a highlighted connection point on the part that should stay still · Esc cancel');
+  setStatus('Auto Align: choose the stationary connection point first.');renderAutoAlignMarkers();updateAutoAlignButton();
+}
+function pickAutoAlignAttachment(clientX,clientY,ids){
+  if(!renderer)return null;const canvas=renderer.renderer.domElement,rect=canvas.getBoundingClientRect();let best=null;
+  for(const id of ids){const e=state.entities.get(id);if(!e)continue;for(const a of autoAlignAttachments(e)){
+    const world=worldAttachment(e,a),p=new THREE.Vector3(...world.worldPoint).project(renderer.camera);if(p.z<-1||p.z>1)continue;
+    const sx=rect.left+(p.x+1)*.5*rect.width,sy=rect.top+(1-p.y)*.5*rect.height,d=Math.hypot(clientX-sx,clientY-sy);
+    if(d<=28&&(!best||d<best.distance))best={entityId:id,attachment:a,world,distance:d};
+  }}
+  return best;
+}
+function autoAlignMatrix(anchorEntity,anchorAttachment,movingEntity,movingAttachment){
+  const anchorDef=library.get(anchorEntity.partId),movingDef=library.get(movingEntity.partId),anchorWorld=worldAttachment(anchorEntity,anchorAttachment),movingWorld=worldAttachment(movingEntity,movingAttachment);
+  const fromAxis=new THREE.Vector3(...movingWorld.worldAxis).normalize(),anchorAxis=new THREE.Vector3(...anchorWorld.worldAxis).normalize(),toAxis=anchorAxis.clone().negate();
+  const q=new THREE.Quaternion().setFromUnitVectors(fromAxis,toAxis),sourcePoint=new THREE.Vector3(...movingWorld.worldPoint),anchorPoint=new THREE.Vector3(...anchorWorld.worldPoint);
+  const around=new THREE.Matrix4().makeTranslation(sourcePoint.x,sourcePoint.y,sourcePoint.z).multiply(new THREE.Matrix4().makeRotationFromQuaternion(q)).multiply(new THREE.Matrix4().makeTranslation(-sourcePoint.x,-sourcePoint.y,-sourcePoint.z));
+  let desired=null,kind='geometric';
+  if(compatible(movingAttachment,anchorAttachment)){
+    const physical=physicalSnapTarget(movingDef,movingAttachment,{entity:anchorEntity,def:anchorDef,local:anchorAttachment,world:anchorWorld});
+    if(!physical)return {error:'Those connection points are occupied or cannot physically fit.'};
+    desired=new THREE.Vector3(...physical.targetWorld.worldPoint);kind='insert';
+  }else if(isReceptacle(movingAttachment)&&isReceptacle(anchorAttachment)){
+    const anchorDepth=receptacleDepth(anchorDef,anchorAttachment),movingDepth=receptacleDepth(movingDef,movingAttachment);if(!(anchorDepth>0&&movingDepth>0))return {error:'Could not determine the two hole depths.'};
+    const separation=(anchorDepth+movingDepth)*.5,a=anchorPoint.clone().addScaledVector(anchorAxis,separation),b=anchorPoint.clone().addScaledVector(anchorAxis,-separation);
+    desired=a.distanceToSquared(sourcePoint)<=b.distanceToSquared(sourcePoint)?a:b;kind='flush-holes';
+  }else return {error:'Those two connection-point types cannot be physically aligned.'};
+  const delta=desired.clone().sub(sourcePoint),after=new THREE.Matrix4().makeTranslation(delta.x,delta.y,delta.z).multiply(around).multiply(new THREE.Matrix4().fromArray(movingEntity.matrix));
+  return {matrix:after.toArray(),kind};
+}
+function handleAutoAlignClick(ev){
+  if(!autoAlign)return false;
+  const ids=autoAlign.first?autoAlign.ids.filter(id=>id!==autoAlign.first.entityId):autoAlign.ids,pick=pickAutoAlignAttachment(ev.clientX,ev.clientY,ids);
+  if(!pick){setStatus('Click one of the highlighted connection points.','warn');return true;}
+  if(!autoAlign.first){
+    autoAlign.first=pick;const otherId=autoAlign.ids.find(id=>id!==pick.entityId),other=state.entities.get(otherId);
+    autoAlignHint(`Auto Align · 2 of 2 · click the matching point on ${entityName(other)} · Esc cancel`);setStatus(`Anchor chosen on ${entityName(state.entities.get(pick.entityId))}. Now choose the point to move.`);renderAutoAlignMarkers();return true;
+  }
+  const anchor=state.entities.get(autoAlign.first.entityId),moving=state.entities.get(pick.entityId);if(!anchor||!moving){cancelAutoAlign(true);return true;}
+  if(moving.locked||childConstraint(state.constraints,moving.id)){setStatus('That second part is locked or driven. Restart Auto Align and choose it first so it stays stationary.','warn');return true;}
+  const result=autoAlignMatrix(anchor,autoAlign.first.attachment,moving,pick.attachment);if(result.error){setStatus(result.error,'warn');return true;}
+  const idsCopy=[...autoAlign.ids],before=[...moving.matrix],after=[...result.matrix];autoAlign=null;renderer.setMarkers([]);$('placementHint')?.classList.add('hidden');renderer.orbit.enabled=renderer.navigationPreset==='standard';updateAutoAlignButton();
+  history.execute(command('Auto Align',()=>{moving.matrix=[...after];setSelection(idsCopy);scheduleSync();},()=>{moving.matrix=[...before];setSelection(idsCopy);scheduleSync();}));
+  setStatus(result.kind==='flush-holes'?'Auto Align complete · holes are coaxial and the part faces are flush. Add a connector if the joint should be physically fastened.':'Auto Align complete · compatible connection points inserted using physical fit.');
+  return true;
+}
+
+function beginPlacement(partId){if(autoAlign)cancelAutoAlign(true);if(!libraryReady){setStatus('Parts library is not ready yet.','warn');return;}const d=library.get(partId);if(!d)return;placement={partId,spin:0,candidate:null,candidateIndex:0,freeMatrix:new THREE.Matrix4(),lastPointer:null,requestId:0};$('placementHint').classList.remove('hidden');$('placementHint').textContent=`Placing ${d.name} · click to place · Q/E rotate · Tab cycle snap · Esc cancel`;setStatus('Move near a detected hole or compatible attachment to Proximity Snap.');}
 function cancelPlacement(){placement=null;renderer?.clearGhost();renderer?.setMarkers([]);$('placementHint')?.classList.add('hidden');if(renderer)setStatus('Ready');}
 async function updatePlacement(ev){if(!placement||!renderer)return;const current=placement;current.lastPointer={clientX:ev.clientX,clientY:ev.clientY};const requestId=++current.requestId,ray=renderer.screenRay(ev.clientX,ev.clientY),plane=new THREE.Plane(new THREE.Vector3(0,0,1),0),hit=new THREE.Vector3();if(!ray.intersectPlane(plane,hit))return;const free=new THREE.Matrix4().makeTranslation(hit.x,hit.y,hit.z);current.freeMatrix=free;current.candidate=bestSnap(library.get(current.partId),free);try{await renderer.setGhost(current.partId,current.candidate?.matrix||free,!!current.candidate);if(placement!==current||requestId!==current.requestId)return;const markers=current.candidate?[{point:current.candidate.targetWorld.worldPoint,color:0x5de397}]:allTargetAttachments().filter(t=>new THREE.Vector3(...t.world.worldPoint).distanceTo(hit)<50).slice(0,35).map(t=>({point:t.world.worldPoint}));renderer.setMarkers(markers);}catch(err){if(placement===current)setStatus(`Part preview failed: ${err.message}`,'error');}}
 function refreshPlacement(){if(placement?.lastPointer)updatePlacement(placement.lastPointer);}
@@ -229,7 +300,7 @@ function renderParts(){const el=$('partsList');if(!el)return;if(!libraryReady){e
 function renderConstraints(){const el=$('constraints');if(!state.constraints.length){el.className='constraints empty';el.textContent='No constraints';return;}el.className='constraints';el.innerHTML=state.constraints.map(c=>`<div class="constraint-card"><b>${c.type==='fixed'?'Fixed':'Revolute'}</b>${escapeHtml(entityName(state.entities.get(c.parentId)))} → ${escapeHtml(entityName(state.entities.get(c.childId)))}${c.type==='revolute'?` · ${c.angle||0}°`:''}</div>`).join('');}
 function renderInspector(){
   const el=$('inspector'),ids=[...state.selection];if(!ids.length){el.className='inspector empty';el.textContent='Select a part';return;}el.className='inspector';
-  if(ids.length>1){const grouped=ids.some(id=>state.entities.get(id)?.groupId);el.innerHTML=`<b>${ids.length} parts selected</b><div class="row" style="margin-top:10px"><button id="multiFix">Fix 1 → 2</button><button id="multiDup">Duplicate</button><button id="multiGroup">${grouped?'Regroup':'Group'}</button>${grouped?'<button id="multiUngroup">Ungroup</button>':''}</div><div class="library-meta inspector-meta">${grouped?'Grouped selection · Ctrl/Cmd+Shift+G to ungroup':'Ctrl/Cmd+G groups selection · Ctrl/Cmd+D duplicates'}</div>`;$('multiFix').onclick=fixedConstraintForSelection;$('multiDup').onclick=duplicateSelected;$('multiGroup').onclick=groupSelected;if($('multiUngroup'))$('multiUngroup').onclick=ungroupSelected;return;}
+  if(ids.length>1){const grouped=ids.some(id=>state.entities.get(id)?.groupId),canAlign=ids.length===2;el.innerHTML=`<b>${ids.length} parts selected</b><div class="row" style="margin-top:10px">${canAlign?'<button id="multiAlign" class="primary">Auto Align</button>':''}<button id="multiFix">Fix 1 → 2</button><button id="multiDup">Duplicate</button><button id="multiGroup">${grouped?'Regroup':'Group'}</button>${grouped?'<button id="multiUngroup">Ungroup</button>':''}</div><div class="library-meta inspector-meta">${canAlign?'Ctrl/Cmd+Shift+A · choose an anchor point, then a point to move':grouped?'Grouped selection · Ctrl/Cmd+Shift+G to ungroup':'Ctrl/Cmd+G groups selection · Ctrl/Cmd+D duplicates'}</div>`;if($('multiAlign'))$('multiAlign').onclick=startAutoAlign;$('multiFix').onclick=fixedConstraintForSelection;$('multiDup').onclick=duplicateSelected;$('multiGroup').onclick=groupSelected;if($('multiUngroup'))$('multiUngroup').onclick=ungroupSelected;return;}
   const e=state.entities.get(ids[0]);if(!e){setSelection([]);return;}const def=e.custom?null:library.get(e.partId),tr=matrixTRS(e.matrix),driven=childConstraint(state.constraints,e.id),atts=def?.attachments||[],verified=atts.filter(a=>a.verified).length;
   el.innerHTML=`<b>${escapeHtml(entityName(e))}</b><div class="library-meta inspector-meta">${escapeHtml(def?.partNumber||'Imported CAD')} · ${verified}/${atts.length} verified axes</div>${driven?'<div class="constraint-card">Driven by a constraint. Detach it to move directly.</div>':''}<div class="field"><label>Position (mm)</label><div class="vec">${['X','Y','Z'].map((a,i)=>`<input data-pos="${i}" value="${tr.p.getComponent(i).toFixed(2)}" ${driven?'disabled':''} aria-label="${a}">`).join('')}</div></div><div class="field"><label>Rotation (deg)</label><div class="vec">${['X','Y','Z'].map((a,i)=>`<input data-rot="${i}" value="${tr.r[i].toFixed(1)}" ${driven?'disabled':''} aria-label="${a}">`).join('')}</div></div><div class="field row"><label><input id="lockToggle" type="checkbox" ${e.locked?'checked':''}/> Lock</label><label><input id="hideToggle" type="checkbox" ${e.hidden?'checked':''}/> Hide</label></div><div class="row"><button id="dupBtn">Duplicate</button><button id="deleteBtn">Delete</button><button id="isolateBtn">Isolate</button></div>${driven?constraintEditor(driven):''}`;
   const applyNumeric=()=>{const before=[...e.matrix],p=[...tr.p.toArray()],r=[...tr.r];for(const x of el.querySelectorAll('[data-pos]'))p[+x.dataset.pos]=finiteNumber(x.value,p[+x.dataset.pos]);for(const x of el.querySelectorAll('[data-rot]'))r[+x.dataset.rot]=finiteNumber(x.value,r[+x.dataset.rot]);const after=composeTRS(p,r);history.execute(command('Numeric transform',()=>{e.matrix=[...after];scheduleSync();},()=>{e.matrix=[...before];scheduleSync();}));};
@@ -267,16 +338,16 @@ async function loadLibrary(){
 
 function setMode(mode){renderer?.setTransformMode(mode);$('moveBtn').classList.toggle('active',mode==='translate');$('rotateBtn').classList.toggle('active',mode==='rotate');}
 function bindUI(){
-  $('partSearch').oninput=renderParts;$('category').onchange=renderParts;$('newBtn').onclick=newProject;$('saveBtn').onclick=saveProject;$('openBtn').onclick=()=>$('projectFile').click();$('projectFile').onchange=async e=>{const f=e.target.files?.[0];e.target.value='';if(f)await openProject(f);};$('importBtn').onclick=()=>$('cadFile').click();$('cadFile').onchange=async e=>{const f=e.target.files?.[0];e.target.value='';if(f)await importCAD(f);};$('undoBtn').onclick=()=>history.undo();$('redoBtn').onclick=()=>history.redo();$('moveBtn').onclick=()=>setMode('translate');$('rotateBtn').onclick=()=>setMode('rotate');$('fitBtn').onclick=()=>renderer?.fit([...state.selection],state.entities);$('quality').onchange=e=>{state.quality=e.target.value;renderer?.setQuality(state.quality);scheduleSync();};
+  $('partSearch').oninput=renderParts;$('category').onchange=renderParts;$('newBtn').onclick=newProject;$('saveBtn').onclick=saveProject;$('openBtn').onclick=()=>$('projectFile').click();$('projectFile').onchange=async e=>{const f=e.target.files?.[0];e.target.value='';if(f)await openProject(f);};$('importBtn').onclick=()=>$('cadFile').click();$('cadFile').onchange=async e=>{const f=e.target.files?.[0];e.target.value='';if(f)await importCAD(f);};$('undoBtn').onclick=()=>history.undo();$('redoBtn').onclick=()=>history.redo();$('moveBtn').onclick=()=>setMode('translate');$('rotateBtn').onclick=()=>setMode('rotate');$('fitBtn').onclick=()=>renderer?.fit([...state.selection],state.entities);$('quality').onchange=e=>{state.quality=e.target.value;renderer?.setQuality(state.quality);scheduleSync();};$('autoAlignBtn').onclick=startAutoAlign;updateAutoAlignButton();
   $('shareBtn').onclick=()=>openSharePanel();$('closeShareBtn').onclick=closeSharePanel;$('createRoomBtn').onclick=createLiveRoom;$('copyRoomBtn').onclick=copyRoomLink;$('leaveRoomBtn').onclick=leaveLiveRoom;$('displayName').value=multiplayer.displayName;$('displayName').onchange=e=>multiplayer.setDisplayName(e.target.value);
   window.addEventListener('vex-settings-changed',refreshPlacement);
   const canvas=renderer.renderer.domElement;let down=null,box=false;
   const clearPointerState=()=>{if(box){$('selectRect').classList.add('hidden');renderer.orbit.enabled=true;}box=false;down=null;};
-  canvas.addEventListener('pointerdown',e=>{if(e.button!==0)return;down={x:e.clientX,y:e.clientY,pointerId:e.pointerId};try{canvas.setPointerCapture(e.pointerId);}catch{}if(e.shiftKey&&!placement){box=true;renderer.orbit.enabled=false;const r=$('selectRect');r.classList.remove('hidden');Object.assign(r.style,{left:`${e.clientX}px`,top:`${e.clientY}px`,width:'0px',height:'0px'});}});
-  canvas.addEventListener('pointermove',e=>{const rect=canvas.getBoundingClientRect();if(rect.width&&rect.height)multiplayer.sendCursor((e.clientX-rect.left)/rect.width,(e.clientY-rect.top)/rect.height,state.selection);if(placement){updatePlacement(e);return;}if(box&&down){const x1=Math.min(down.x,e.clientX),y1=Math.min(down.y,e.clientY),x2=Math.max(down.x,e.clientX),y2=Math.max(down.y,e.clientY),r=$('selectRect');Object.assign(r.style,{left:`${x1}px`,top:`${y1}px`,width:`${x2-x1}px`,height:`${y2-y1}px`});}});
-  canvas.addEventListener('pointerup',e=>{if(e.button!==0)return;try{if(canvas.hasPointerCapture?.(e.pointerId))canvas.releasePointerCapture(e.pointerId);}catch{}if(placement){commitPlacement();clearPointerState();return;}if(!down)return;const moved=Math.hypot(e.clientX-down.x,e.clientY-down.y);if(box){const rect={x1:Math.min(down.x,e.clientX),y1:Math.min(down.y,e.clientY),x2:Math.max(down.x,e.clientX),y2:Math.max(down.y,e.clientY)};$('selectRect').classList.add('hidden');renderer.orbit.enabled=true;box=false;setSelection(renderer.boxSelect(rect,state.entities));}else if(moved<5){const id=renderer.pick(e.clientX,e.clientY);if(id)setSelection(e.ctrlKey||e.metaKey?[...new Set([...state.selection,id])]:[id]);else setSelection([]);}down=null;});
+  canvas.addEventListener('pointerdown',e=>{if(e.button!==0)return;down={x:e.clientX,y:e.clientY,pointerId:e.pointerId};try{canvas.setPointerCapture(e.pointerId);}catch{}if(autoAlign){renderer.orbit.enabled=false;return;}if(e.shiftKey&&!placement){box=true;renderer.orbit.enabled=false;const r=$('selectRect');r.classList.remove('hidden');Object.assign(r.style,{left:`${e.clientX}px`,top:`${e.clientY}px`,width:'0px',height:'0px'});}});
+  canvas.addEventListener('pointermove',e=>{const rect=canvas.getBoundingClientRect();if(rect.width&&rect.height)multiplayer.sendCursor((e.clientX-rect.left)/rect.width,(e.clientY-rect.top)/rect.height,state.selection);if(placement){updatePlacement(e);return;}if(autoAlign)return;if(box&&down){const x1=Math.min(down.x,e.clientX),y1=Math.min(down.y,e.clientY),x2=Math.max(down.x,e.clientX),y2=Math.max(down.y,e.clientY),r=$('selectRect');Object.assign(r.style,{left:`${x1}px`,top:`${y1}px`,width:`${x2-x1}px`,height:`${y2-y1}px`});}});
+  canvas.addEventListener('pointerup',e=>{if(e.button!==0)return;try{if(canvas.hasPointerCapture?.(e.pointerId))canvas.releasePointerCapture(e.pointerId);}catch{}if(placement){commitPlacement();clearPointerState();return;}if(autoAlign){if(!down)return;const moved=Math.hypot(e.clientX-down.x,e.clientY-down.y);if(moved<7)handleAutoAlignClick(e);down=null;return;}if(!down)return;const moved=Math.hypot(e.clientX-down.x,e.clientY-down.y);if(box){const rect={x1:Math.min(down.x,e.clientX),y1:Math.min(down.y,e.clientY),x2:Math.max(down.x,e.clientX),y2:Math.max(down.y,e.clientY)};$('selectRect').classList.add('hidden');renderer.orbit.enabled=true;box=false;setSelection(renderer.boxSelect(rect,state.entities));}else if(moved<5){const id=renderer.pick(e.clientX,e.clientY);if(id)setSelection(e.ctrlKey||e.metaKey?[...new Set([...state.selection,id])]:[id]);else setSelection([]);}down=null;});
   canvas.addEventListener('pointercancel',clearPointerState);window.addEventListener('blur',clearPointerState);
-  window.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('sharePanel').classList.contains('open')){closeSharePanel();return;}if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName))return;const mod=e.ctrlKey||e.metaKey,key=e.key.toLowerCase();if(mod&&key==='z'){e.preventDefault();e.shiftKey?history.redo():history.undo();return;}if(mod&&key==='y'){e.preventDefault();history.redo();return;}if(mod&&key==='c'){e.preventDefault();copySelected();return;}if(mod&&key==='x'){e.preventDefault();cutSelected();return;}if(mod&&key==='v'){e.preventDefault();pasteClipboard();return;}if(mod&&key==='d'){e.preventDefault();duplicateSelected();return;}if(mod&&key==='a'){e.preventDefault();setSelection([...state.entities.keys()]);return;}if(mod&&key==='g'){e.preventDefault();e.shiftKey?ungroupSelected():groupSelected();return;}if(e.key==='Delete'||e.key==='Backspace')removeSelected();else if(key==='m')setMode('translate');else if(key==='r'&&!placement)setMode('rotate');else if(key==='f')renderer.fit([...state.selection],state.entities);else if(e.key==='Escape')cancelPlacement();else if(placement&&(key==='q'||key==='e')){placement.spin+=(key==='q'?-1:1)*Math.PI/2;placement.candidateIndex=0;refreshPlacement();}else if(placement&&e.key==='Tab'){e.preventDefault();placement.candidateIndex++;refreshPlacement();}});
+  window.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('sharePanel').classList.contains('open')){closeSharePanel();return;}if(['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName))return;const mod=e.ctrlKey||e.metaKey,key=e.key.toLowerCase();if(mod&&key==='z'){e.preventDefault();e.shiftKey?history.redo():history.undo();return;}if(mod&&key==='y'){e.preventDefault();history.redo();return;}if(mod&&key==='c'){e.preventDefault();copySelected();return;}if(mod&&key==='x'){e.preventDefault();cutSelected();return;}if(mod&&key==='v'){e.preventDefault();pasteClipboard();return;}if(mod&&key==='d'){e.preventDefault();duplicateSelected();return;}if(mod&&key==='a'&&e.shiftKey){e.preventDefault();startAutoAlign();return;}if(mod&&key==='a'){e.preventDefault();setSelection([...state.entities.keys()]);return;}if(mod&&key==='g'){e.preventDefault();e.shiftKey?ungroupSelected():groupSelected();return;}if(e.key==='Delete'||e.key==='Backspace')removeSelected();else if(key==='m')setMode('translate');else if(key==='r'&&!placement)setMode('rotate');else if(key==='f')renderer.fit([...state.selection],state.entities);else if(e.key==='Escape'){if(!cancelAutoAlign())cancelPlacement();}else if(placement&&(key==='q'||key==='e')){placement.spin+=(key==='q'?-1:1)*Math.PI/2;placement.candidateIndex=0;refreshPlacement();}else if(placement&&e.key==='Tab'){e.preventDefault();placement.candidateIndex++;refreshPlacement();}});
 }
 
 function openSharePanel(){$('sharePanel').classList.add('open');$('sharePanel').setAttribute('aria-hidden','false');updateSharePanel();}
@@ -291,7 +362,7 @@ function renderRemoteCursor(p){if(!p?.actorId)return;let item=remoteCursors.get(
 function clearRemoteCursors(){for(const item of remoteCursors.values()){clearTimeout(item.timer);item.el.remove();}remoteCursors.clear();}
 
 function currentProjectSnapshot(){const p=serializeProject(state);if(renderer)for(const e of p.entities){const m=renderer.entityMatrices?.get(e.id);if(m)e.matrix=[...m];}return p;}
-function publishAppAPI(){globalThis.__vexAppAPI={getProject:currentProjectSnapshot,getRenderer:()=>renderer,getLibrary:()=>library,getPart:id=>library.get(id),getSelection:()=>[...state.selection],select:ids=>setSelection(ids),copy:copySelected,paste:pasteClipboard,group:groupSelected,ungroup:ungroupSelected,duplicate:duplicateSelected,setStatus,scheduleSync:()=>scheduleSync({broadcast:false}),isLibraryReady:()=>libraryReady};}
+function publishAppAPI(){globalThis.__vexAppAPI={getProject:currentProjectSnapshot,getRenderer:()=>renderer,getLibrary:()=>library,getPart:id=>library.get(id),getSelection:()=>[...state.selection],select:ids=>setSelection(ids),copy:copySelected,paste:pasteClipboard,group:groupSelected,ungroup:ungroupSelected,duplicate:duplicateSelected,autoAlign:startAutoAlign,cancelAutoAlign,setStatus,scheduleSync:()=>scheduleSync({broadcast:false}),isLibraryReady:()=>libraryReady};}
 async function createRenderer(){
   const make=q=>new SceneRenderer($('viewport'),library,{quality:q,onContextLost:()=>setStatus('Graphics context lost. Your project is autosaved; waiting for GPU recovery…','error')});
   try{return make(state.quality);}catch(first){console.warn('Renderer init failed',first);if(state.quality!=='low'){state.quality='low';$('quality').value='low';try{return make('low');}catch(second){console.error(second);throw second;}}throw first;}
