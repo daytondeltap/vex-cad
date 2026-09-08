@@ -112,7 +112,7 @@ new_multi="if(ids.length>1){const grouped=ids.some(id=>state.entities.get(id)?.g
 app=replace_once(app,old_multi,new_multi,'multi inspector')
 
 old_bind="$('partSearch').oninput=renderParts;$('category').onchange=renderParts;$('newBtn').onclick=newProject;$('saveBtn').onclick=saveProject;$('openBtn').onclick=()=>$('projectFile').click();$('projectFile').onchange=async e=>{const f=e.target.files?.[0];e.target.value='';if(f)await openProject(f);};$('importBtn').onclick=()=>$('cadFile').click();$('cadFile').onchange=async e=>{const f=e.target.files?.[0];e.target.value='';if(f)await importCAD(f);};$('undoBtn').onclick=()=>history.undo();$('redoBtn').onclick=()=>history.redo();$('moveBtn').onclick=()=>setMode('translate');$('rotateBtn').onclick=()=>setMode('rotate');$('fitBtn').onclick=()=>renderer?.fit([...state.selection],state.entities);$('quality').onchange=e=>{state.quality=e.target.value;renderer?.setQuality(state.quality);scheduleSync();};"
-new_bind=old_bind[:-1]+"$('autoAlignBtn').onclick=startAutoAlign;updateAutoAlignButton();"
+new_bind=old_bind+"$('autoAlignBtn').onclick=startAutoAlign;updateAutoAlignButton();"
 app=replace_once(app,old_bind,new_bind,'toolbar bindings')
 
 old_down="canvas.addEventListener('pointerdown',e=>{if(e.button!==0)return;down={x:e.clientX,y:e.clientY,pointerId:e.pointerId};try{canvas.setPointerCapture(e.pointerId);}catch{}if(e.shiftKey&&!placement){box=true;renderer.orbit.enabled=false;const r=$('selectRect');r.classList.remove('hidden');Object.assign(r.style,{left:`${e.clientX}px`,top:`${e.clientY}px`,width:'0px',height:'0px'});}});"
