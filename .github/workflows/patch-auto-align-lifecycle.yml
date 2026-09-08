@@ -1,0 +1,46 @@
+name: Patch Auto Align lifecycle
+
+on:
+  push:
+    paths:
+      - 'scripts/.run-auto-align-lifecycle'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Patch lifecycle paths
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/app-stable.js')
+          s=p.read_text()
+          pairs=[
+            ("function beginPlacement(partId){if(autoAlign)cancelAutoAlign(true);if(!libraryReady){", "function beginPlacement(partId){if(autoAlign)cancelAutoAlign(true);if(!libraryReady){"),
+            ("placement={partId,spin:0,candidate:null,candidateIndex:0,freeMatrix:new THREE.Matrix4(),lastPointer:null,requestId:0};$('placementHint')", "placement={partId,spin:0,candidate:null,candidateIndex:0,freeMatrix:new THREE.Matrix4(),lastPointer:null,requestId:0};updateAutoAlignButton();$('placementHint')"),
+            ("function cancelPlacement(){placement=null;renderer?.clearGhost();renderer?.setMarkers([]);$('placementHint')?.classList.add('hidden');if(renderer)setStatus('Ready');}", "function cancelPlacement(){placement=null;renderer?.clearGhost();renderer?.setMarkers([]);$('placementHint')?.classList.add('hidden');updateAutoAlignButton();if(renderer)setStatus('Ready');}"),
+            ("function applyProjectData(raw,{broadcast=false,label='Loaded'}={}){const p=validateProject(raw),next=hydrateProject(p);", "function applyProjectData(raw,{broadcast=false,label='Loaded'}={}){if(autoAlign)cancelAutoAlign(true);const p=validateProject(raw),next=hydrateProject(p);"),
+            ("function newProject(){state.projectName='Untitled';", "function newProject(){if(autoAlign)cancelAutoAlign(true);state.projectName='Untitled';")
+          ]
+          for old,new in pairs:
+            if old==new: continue
+            if s.count(old)!=1: raise SystemExit(f'expected lifecycle pattern once, got {s.count(old)}: {old[:70]}')
+            s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+          node --check src/app-stable.js
+          node --test tests/*.test.mjs
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/app-stable.js
+          git commit -m 'fix: reset Auto Align across editor lifecycle'
+          git push origin HEAD:main
