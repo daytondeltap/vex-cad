@@ -78,6 +78,31 @@ def dedupe_attachments(items):
     return out
 
 
+def standoff_end_attachments(name, bbox):
+    """Return the two real male insertion ends on a pitch standoff.
+
+    VEX IQ pitch standoffs are spacers with one standard male connection end on
+    each side. Their long middle section is *spacing*, not extra usable pin
+    length, so each attachment carries its own insertion length.
+    """
+    n=name.lower()
+    if 'standoff' not in n or 'standoff connector' in n or 'extender' in n:
+        return []
+    dims=[bbox[1][i]-bbox[0][i] for i in range(3)]
+    major=max(range(3), key=lambda i:dims[i])
+    # The deployed first-generation CAD measures the male end at ~6.14 mm.
+    # Clamp only for unusually short geometry so synthesized ends never cross.
+    pin_length=min(6.14,max(2.0,dims[major]*0.45))
+    out=[]
+    for sign in (-1,1):
+        axis=[0.,0.,0.]; axis[major]=float(sign)
+        point=[(bbox[0][i]+bbox[1][i])*0.5 for i in range(3)]
+        point[major]=(bbox[0][major]+pin_length*0.5) if sign<0 else (bbox[1][major]-pin_length*0.5)
+        out.append({'type':'pin','point':v3(point),'axis':axis,'radius':2.1,'length':round(pin_length,4),
+                    'verified':True,'source':'standoff-end-geometry'})
+    return out
+
+
 def extract_attachments(shape, name, bbox):
     n=name.lower(); attachments=[]
     male_pin = (' pin' in ' '+n or n.endswith('pin')) and 'pinion' not in n
@@ -101,6 +126,7 @@ def extract_attachments(shape, name, bbox):
                 continue
     center=[(bbox[0][i]+bbox[1][i])*0.5 for i in range(3)]
     dims=[bbox[1][i]-bbox[0][i] for i in range(3)]
+    attachments.extend(standoff_end_attachments(name,bbox))
     if male_pin or shaftlike:
         major=max(range(3), key=lambda i:dims[i]); axis=[0.,0.,0.]; axis[major]=1.
         attachments.append({'type':'shaft' if shaftlike else 'pin','point':v3(center),'axis':axis,'verified':False,'source':'part-axis-heuristic'})
