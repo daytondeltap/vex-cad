@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'scripts/apply_auto_align_patch.py'
+      - 'scripts/.run-auto-align-patch'
 
 permissions:
   contents: write
