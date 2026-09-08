@@ -1,0 +1,34 @@
+name: Apply Auto Align editor patch
+
+on:
+  push:
+    paths:
+      - 'scripts/apply_auto_align_patch.py'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Apply guarded editor patch
+        run: |
+          set -euo pipefail
+          python3 scripts/apply_auto_align_patch.py
+          node --check src/app-stable.js
+          node --check src/studio-settings.js
+          node --test tests/*.test.mjs
+          python3 -m py_compile tools/build_parts.py
+      - name: Commit editor changes
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/app-stable.js src/studio-settings.js index.html
+          git diff --cached --quiet && exit 0
+          git commit -m 'feat: add two-point Auto Align workflow'
+          git push origin HEAD:main
