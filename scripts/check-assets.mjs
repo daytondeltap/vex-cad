@@ -34,6 +34,7 @@ for(const part of m.parts){
     if(!finite3(a.point)||!finite3(a.axis))throw new Error(`Invalid attachment coordinates on ${part.id}`);
     const axisLength=Math.hypot(...a.axis);
     if(axisLength<0.9||axisLength>1.1)throw new Error(`Non-unit attachment axis on ${part.id}`);
+    if(a.length!=null&&(!Number.isFinite(a.length)||a.length<=0))throw new Error(`Invalid connector length on ${part.id}`);
   }
   totalTriangles+=part.triangles;verified+=attachments.filter(a=>a.verified).length;
   const fp=path.join(root,part.mesh);if(!fs.existsSync(fp))throw new Error(`Missing mesh ${part.mesh}`);
@@ -44,5 +45,17 @@ for(const part of m.parts){
   if(ic!==part.triangles*3)throw new Error(`Manifest/index mismatch ${part.mesh}`);
 }
 
+// Pitch standoffs are male structural fasteners at both ends. This release
+// gate prevents a geometry-cache regression from silently turning them back
+// into inert visual-only pieces.
+const pitchStandoffs=m.parts.filter(p=>/VEX IQ Standoffs\s+228-/i.test(p.name)&&!/extender/i.test(p.name));
+if(pitchStandoffs.length){
+  for(const p of pitchStandoffs){
+    const ends=(p.attachments||[]).filter(a=>a.type==='pin'&&a.source==='standoff-end-geometry');
+    if(ends.length!==2)throw new Error(`Standoff ${p.partNumber} must expose exactly two physical connector ends; found ${ends.length}`);
+    if(ends.some(a=>!(a.length>=5.8&&a.length<=6.35)))throw new Error(`Standoff ${p.partNumber} has invalid insertion length`);
+  }
+}
+
 if(failures.length)console.warn(`asset-check warning: ${failures.length}/${sourceCount} source STEP entries unavailable; usable catalog remains valid`);
-console.log(`asset-check: ${m.parts.length} parts, ${verified} BREP-verified attachments, ${totalTriangles.toLocaleString()} triangles`);
+console.log(`asset-check: ${m.parts.length} parts, ${verified} BREP-verified attachments, ${pitchStandoffs.length} connectable standoffs, ${totalTriangles.toLocaleString()} triangles`);
