@@ -1,102 +1,88 @@
-const EPS=1e-9;
-const vec3=v=>Array.isArray(v)&&v.length===3?v:[0,0,0];
-const normalized=v=>{const a=vec3(v),m=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/m,a[1]/m,a[2]/m];};
+export const dist3=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2]);
+const norm=v=>{const l=Math.hypot(...v)||1;return v.map(x=>x/l);};
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const clamp=(n,a,b)=>Math.min(b,Math.max(a,n));
 
-export const isConnector=a=>a?.type==='pin'||a?.type==='shaft';
-export const isReceptacle=a=>a?.type==='hole'||a?.type==='socket';
+export function isReceptacle(a){return a?.type==='hole'||a?.type==='socket';}
+export function isConnector(a){return a?.type==='pin'||a?.type==='shaft';}
 
-export const compatible=(a,b)=>{
-  const pair=`${a?.type}:${b?.type}`;
-  // Physical connection hardware is required. Two empty holes (or sockets)
-  // never form a connection by themselves.
-  return ['hole:pin','pin:hole','socket:shaft','shaft:socket'].includes(pair);
-};
-
-export function dot(a,b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
-export function distance(a,b){return Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2]);}
-
-export function sameAttachment(a,b,{pointTolerance=.08,axisTolerance=.002}={}){
-  if(!a||!b||a.type!==b.type)return false;
-  if(distance(vec3(a.point),vec3(b.point))>pointTolerance)return false;
-  const aa=normalized(a.axis),ba=normalized(b.axis);
-  return 1-Math.abs(dot(aa,ba))<=axisTolerance;
+// Receptacles need real connecting hardware. In particular, two bare beam
+// holes are not a connection just because their centers happen to coincide.
+export function compatible(a,b){
+  if(!a||!b)return false;
+  const x=a.type,y=b.type;
+  if(isReceptacle(a)&&isReceptacle(b))return false;
+  if((x==='pin'&&y==='hole')||(x==='hole'&&y==='pin'))return true;
+  if((x==='pin'&&y==='socket')||(x==='socket'&&y==='pin'))return true;
+  if((x==='shaft'&&(y==='hole'||y==='socket'))||(y==='shaft'&&(x==='hole'||x==='socket')))return true;
+  // Shaft-to-shaft is retained for explicit axle continuation points. Generic
+  // pin-to-pin remains physically invalid.
+  return x==='shaft'&&y==='shaft';
 }
 
-export function projectedSpan(def,attachment){
-  const bbox=def?.bbox;
-  if(!Array.isArray(bbox)||bbox.length!==2)return 0;
-  const lo=bbox[0],hi=bbox[1];
-  if(!lo?.every?.(Number.isFinite)||!hi?.every?.(Number.isFinite))return 0;
-  const axis=normalized(attachment?.axis||[0,0,1]);
-  let min=Infinity,max=-Infinity;
-  for(const x of [lo[0],hi[0]])for(const y of [lo[1],hi[1]])for(const z of [lo[2],hi[2]]){
-    const p=x*axis[0]+y*axis[1]+z*axis[2];min=Math.min(min,p);max=Math.max(max,p);
+export function projectedSpan(bbox,axis){
+  if(!Array.isArray(bbox)||bbox.length!==2||!Array.isArray(axis))return 0;
+  const a=norm(axis),lo=bbox[0],hi=bbox[1];let min=Infinity,max=-Infinity;
+  for(let mask=0;mask<8;mask++){
+    const p=[mask&1?hi[0]:lo[0],mask&2?hi[1]:lo[1],mask&4?hi[2]:lo[2]],d=dot(p,a);
+    min=Math.min(min,d);max=Math.max(max,d);
   }
-  return Number.isFinite(min)&&Number.isFinite(max)?Math.max(0,max-min):0;
+  return Number.isFinite(max-min)?Math.max(0,max-min):0;
 }
 
-export function connectorLength(def,attachment){
-  const explicit=Number(attachment?.length);
+export function connectorLength(def,a){
+  const explicit=Number(a?.length);
   if(Number.isFinite(explicit)&&explicit>0)return explicit;
-  const span=projectedSpan(def,attachment);
-  // The currently shipped VEX IQ connector family tops out at about 25 mm.
-  // Capping inferred pin length prevents a heuristic axis on a large part from
-  // being mistaken for an impossibly long connector.
-  return attachment?.type==='pin'?Math.min(span,25.4):span;
+  return isConnector(a)?projectedSpan(def?.bbox,a.axis):0;
 }
 
-export function receptacleDepth(def,attachment){
-  const explicit=Number(attachment?.depth);
-  if(Number.isFinite(explicit)&&explicit>0)return explicit;
-  const span=projectedSpan(def,attachment);
-  // VEX IQ beam/plate pin holes are normally one structural layer deep
-  // (~6.1 mm). BREP axes sometimes run across the whole part bbox, so cap
-  // inferred hole depth conservatively instead of treating a long beam as a
-  // 100+ mm-deep hole.
-  return attachment?.type==='hole'?Math.min(span,6.35):span;
+export function receptacleDepth(def,a){
+  if(!isReceptacle(a))return 0;
+  const explicit=Number(a?.depth);if(Number.isFinite(explicit)&&explicit>0)return explicit;
+  const span=projectedSpan(def?.bbox,a.axis);
+  // A structural IQ hole is about one beam layer deep. Protect against a bad
+  // detected axis accidentally interpreting the whole beam length as depth.
+  return Math.min(span,6.35);
 }
 
-export function findFreeConnectorOffset(length,newDepth,occupied=[],tolerance=.18){
+export function sameAttachment(a,b,pointTolerance=.45,axisTolerance=.04){
+  if(!a||!b||a.type!==b.type||!Array.isArray(a.point)||!Array.isArray(b.point))return false;
+  if(dist3(a.point,b.point)>pointTolerance)return false;
+  const aa=norm(a.axis||[0,0,1]),bb=norm(b.axis||[0,0,1]);
+  return 1-Math.abs(dot(aa,bb))<=axisTolerance;
+}
+
+export function intervalsOverlap(a,b,epsilon=.08){return a.min<b.max-epsilon&&b.min<a.max-epsilon;}
+
+// Returns the axial center for a new receptacle on a connector whose local
+// axial interval is [-length/2,+length/2]. This is a tiny 1-D packing problem:
+// use real occupied hole depths rather than a fixed "number of beams" guess.
+export function findFreeConnectorOffset(length,newDepth,occupied=[]){
   length=Number(length);newDepth=Number(newDepth);
-  if(!(length>0&&newDepth>0)||newDepth>length+tolerance)return null;
-  const half=length/2;
-  const spans=(occupied||[]).map(o=>{
-    const center=Number(o?.center)||0,depth=Math.max(0,Number(o?.depth)||0);
-    return [Math.max(-half,center-depth/2),Math.min(half,center+depth/2)];
-  }).filter(([a,b])=>b>a+EPS).sort((a,b)=>a[0]-b[0]);
-  const merged=[];
-  for(const span of spans){
-    const last=merged[merged.length-1];
-    if(last&&span[0]<=last[1]+tolerance*.25)last[1]=Math.max(last[1],span[1]);
-    else merged.push([...span]);
-  }
-  const gaps=[];let cursor=-half;
-  for(const [a,b] of merged){if(a>cursor)gaps.push([cursor,a]);cursor=Math.max(cursor,b);}
-  if(cursor<half)gaps.push([cursor,half]);
-  for(const [a,b] of gaps){
-    if(b-a+tolerance<newDepth)continue;
-    // Pack against the nearest free end so remaining connector length stays
-    // contiguous for another beam instead of overlapping the current beam.
-    return Math.min(b-newDepth/2,a+newDepth/2);
-  }
-  return null;
+  if(!(length>0&&newDepth>0)||newDepth>length+.08)return null;
+  const half=length/2,lo=-half+newDepth/2,hi=half-newDepth/2;
+  const blocked=occupied.map(x=>({min:Number(x.center)-Number(x.depth)/2,max:Number(x.center)+Number(x.depth)/2})).filter(x=>Number.isFinite(x.min)&&Number.isFinite(x.max));
+  const candidates=[lo,hi,0,...blocked.flatMap(x=>[x.min-newDepth/2,x.max+newDepth/2])].map(x=>clamp(x,lo,hi));
+  const uniq=[...new Set(candidates.map(x=>Math.round(x*1000)/1000))];
+  const valid=uniq.filter(center=>!blocked.some(b=>intervalsOverlap({min:center-newDepth/2,max:center+newDepth/2},b)));
+  if(!valid.length)return null;
+  // Prefer ends first so a short 1x1 pin can naturally bridge two layers.
+  valid.sort((a,b)=>Math.abs(b)-Math.abs(a)||a-b);
+  return valid[0];
 }
 
-export function canFitConnector(length,occupiedDepths,newDepth,tolerance=.18){
-  const occupied=(occupiedDepths||[]).map((depth,i)=>({
-    depth:Number(depth)||0,
-    center:-Number(length)/2+(occupiedDepths.slice(0,i).reduce((n,d)=>n+(Number(d)||0),0))+(Number(depth)||0)/2
-  }));
-  return findFreeConnectorOffset(length,newDepth,occupied,tolerance)!==null;
+export function canFitConnector(length,occupiedDepths,newDepth){
+  const occupied=[];
+  for(const d of occupiedDepths||[]){const c=findFreeConnectorOffset(length,d,occupied);if(c==null)return false;occupied.push({center:c,depth:d});}
+  return findFreeConnectorOffset(length,newDepth,occupied)!=null;
 }
 
-export function rankSnapCandidates(sourceAttachments,targetAttachments,maxDistance=12){
+export function rankSnapCandidates(sourceAttachments,targetAttachments,maxDistance=18){
   const out=[];
-  for(let si=0;si<sourceAttachments.length;si++)for(let ti=0;ti<targetAttachments.length;ti++){
-    const s=sourceAttachments[si],t=targetAttachments[ti];if(!compatible(s,t))continue;
-    const d=distance(s.worldPoint||s.point,t.worldPoint||t.point);if(d>maxDistance)continue;
-    const axisScore=1-Math.abs(dot(s.worldAxis||s.axis,t.worldAxis||t.axis));
-    out.push({sourceIndex:si,targetIndex:ti,distance:d,score:d+axisScore*2,source:s,target:t});
+  for(const s of sourceAttachments||[])for(const t of targetAttachments||[]){
+    if(!compatible(s,t))continue;const d=dist3(s.point,t.point);if(d>maxDistance)continue;
+    const sa=norm(s.axis),ta=norm(t.axis),alignment=Math.abs(dot(sa,ta));
+    out.push({source:s,target:t,distance:d,alignment,score:d+(1-alignment)*6});
   }
-  return out.sort((a,b)=>a.score-b.score);
+  out.sort((a,b)=>a.score-b.score);return out;
 }
