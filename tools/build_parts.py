@@ -81,24 +81,22 @@ def dedupe_attachments(items):
 def standoff_end_attachments(name, bbox):
     """Return the two real male insertion ends on a pitch standoff.
 
-    VEX IQ pitch standoffs are spacers with one standard male connection end on
-    each side. Their long middle section is *spacing*, not extra usable pin
-    length, so each attachment carries its own insertion length.
+    Standoffs are connector hardware, not bare structure. Each end is emitted
+    as its own explicit ``standoff`` attachment so snapping and Auto Align can
+    target either male end independently while still enforcing insertion length.
     """
     n=name.lower()
     if 'standoff' not in n or 'standoff connector' in n or 'extender' in n:
         return []
     dims=[bbox[1][i]-bbox[0][i] for i in range(3)]
     major=max(range(3), key=lambda i:dims[i])
-    # The deployed first-generation CAD measures the male end at ~6.14 mm.
-    # Clamp only for unusually short geometry so synthesized ends never cross.
     pin_length=min(6.14,max(2.0,dims[major]*0.45))
     out=[]
     for sign in (-1,1):
         axis=[0.,0.,0.]; axis[major]=float(sign)
         point=[(bbox[0][i]+bbox[1][i])*0.5 for i in range(3)]
         point[major]=(bbox[0][major]+pin_length*0.5) if sign<0 else (bbox[1][major]-pin_length*0.5)
-        out.append({'type':'pin','point':v3(point),'axis':axis,'radius':2.1,'length':round(pin_length,4),
+        out.append({'type':'standoff','point':v3(point),'axis':axis,'radius':2.1,'length':round(pin_length,4),
                     'verified':True,'source':'standoff-end-geometry'})
     return out
 
@@ -201,7 +199,6 @@ def classify_source_bytes(data: bytes):
         return 'empty-source'
     if stripped.startswith(LFS_PREFIX):
         return 'git-lfs-pointer'
-    # A real STEP exchange file should contain ISO-10303-21 near the beginning.
     head=stripped[:4096].upper()
     if b'ISO-10303-21' not in head:
         return 'invalid-step-header'
@@ -258,32 +255,35 @@ def main():
                 meshname=f'{uid}.vxm'; write_mesh(meshdir/meshname,verts,tris,bbmin,bbmax)
                 cat=category_for(display); attachments=extract_attachments(shape,display,(bbmin,bbmax))
                 parts.append({'id':pid,'partNumber':pn,'name':display,'category':cat,'color':color_for(cat),'mesh':f'mesh/{meshname}',
-                    'bbox':[v3(bbmin),v3(bbmax)],'vertices':len(verts),'triangles':len(tris),'tolerance':round(tol,4),'attachments':attachments})
+                              'bbox':[v3(bbmin),v3(bbmax)],'triangles':len(tris),'attachments':attachments})
+                print(f'[{idx}/{len(names)}] {pn}: {len(tris)} tris, {len(attachments)} attachments', flush=True)
             except Exception as e:
-                failures.append({'file':base,'kind':'conversion-error','error':str(e)[:300]})
+                failures.append({'file':base,'kind':'conversion-error','error':str(e)})
                 print(f'WARN {base}: {e}', flush=True)
             finally:
-                try: tmp.unlink()
-                except Exception: pass
-            if idx%25==0 or idx==len(names):
-                print(f'{idx}/{len(names)} parts, failures={len(failures)}',flush=True)
-    total=len(names)
-    ratio=(len(failures)/total) if total else 1.0
-    manifest={'schema':3,'source':'VEX IQ STEP geometry mirror','sourceUrl':'https://github.com/vex-ru/vex-iq-stl',
-      'sourceEntryCount':total,'partCount':len(parts),'failedCount':len(failures),'complete':len(failures)==0,
-      'verifiedBrepAttachments':sum(sum(1 for a in p['attachments'] if a.get('verified')) for p in parts),
-      'parts':parts,'failures':failures}
-    (out/'manifest.json').write_text(json.dumps(manifest,separators=(',',':')),encoding='utf8')
-    print(json.dumps({'parts':len(parts),'sourceEntries':total,'failures':len(failures),'failureRatio':round(ratio,4),'verifiedAttachments':manifest['verifiedBrepAttachments']}))
-    if len(parts) < MIN_USABLE_PARTS:
-        print(f'ERROR only {len(parts)} usable parts generated; expected at least {MIN_USABLE_PARTS}', file=sys.stderr)
-        sys.exit(2)
+                tmp.unlink(missing_ok=True)
+    if not parts:
+        raise RuntimeError('No VEX parts were converted')
+    failure_ratio=len(failures)/max(1,len(names))
     if args.strict and failures:
-        sys.exit(2)
-    if ratio > MAX_FAILURE_RATIO:
-        print(f'ERROR source failure ratio {ratio:.1%} exceeds {MAX_FAILURE_RATIO:.0%}', file=sys.stderr)
-        sys.exit(2)
+        raise RuntimeError(f'{len(failures)} source parts failed in strict mode')
+    if len(parts)<MIN_USABLE_PARTS:
+        raise RuntimeError(f'Only {len(parts)} usable VEX parts were converted; expected at least {MIN_USABLE_PARTS}')
+    if failure_ratio>MAX_FAILURE_RATIO:
+        raise RuntimeError(f'{len(failures)}/{len(names)} VEX sources failed ({failure_ratio:.1%}), above {MAX_FAILURE_RATIO:.0%} limit')
+    manifest={'schema':1,'partCount':len(parts),'verifiedBrepAttachments':sum(sum(1 for a in p['attachments'] if a.get('verified')) for p in parts),'parts':parts,
+              'failedCount':len(failures),'failures':failures}
+    (out/'manifest.json').write_text(json.dumps(manifest,separators=(',',':')))
+    print(f'Built {len(parts)} parts with {manifest["verifiedBrepAttachments"]} verified BREP axes; {len(failures)} source failures.', flush=True)
+    if failures:
+        kinds={}
+        for f in failures:kinds[f['kind']]=kinds.get(f['kind'],0)+1
+        print('Failure breakdown: '+', '.join(f'{k}={v}' for k,v in sorted(kinds.items())), flush=True)
 
 
-if __name__=='__main__':
-    main()
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as exc:
+        print(f'ERROR: {exc}', file=sys.stderr)
+        sys.exit(1)
