@@ -255,7 +255,7 @@ def main():
                 meshname=f'{uid}.vxm'; write_mesh(meshdir/meshname,verts,tris,bbmin,bbmax)
                 cat=category_for(display); attachments=extract_attachments(shape,display,(bbmin,bbmax))
                 parts.append({'id':pid,'partNumber':pn,'name':display,'category':cat,'color':color_for(cat),'mesh':f'mesh/{meshname}',
-                              'bbox':[v3(bbmin),v3(bbmax)],'triangles':len(tris),'attachments':attachments})
+                              'bbox':[v3(bbmin),v3(bbmax)],'vertices':len(verts),'triangles':len(tris),'attachments':attachments})
                 print(f'[{idx}/{len(names)}] {pn}: {len(tris)} tris, {len(attachments)} attachments', flush=True)
             except Exception as e:
                 failures.append({'file':base,'kind':'conversion-error','error':str(e)})
