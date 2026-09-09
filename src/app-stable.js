@@ -221,7 +221,7 @@ function fixedConstraintForSelection(){const ids=[...state.selection];if(ids.len
 
 function updateAutoAlignButton(){
   const btn=$('autoAlignBtn');if(!btn)return;
-  btn.disabled=state.selection.size!==2||!!placement;
+  btn.disabled=state.selection.size!==2;
   btn.classList.toggle('active',!!autoAlign);btn.setAttribute('aria-pressed',autoAlign?'true':'false');
 }
 function autoAlignAttachments(e){return localAttachmentDef(e).filter(a=>Array.isArray(a?.point)&&Array.isArray(a?.axis));}
