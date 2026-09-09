@@ -1,0 +1,41 @@
+name: Fix generated part manifest metadata
+
+on:
+  push:
+    paths:
+      - 'scripts/.fix-part-manifest'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Restore vertex metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tools/build_parts.py')
+          s=p.read_text()
+          old="'bbox':[v3(bbmin),v3(bbmax)],'triangles':len(tris),'attachments':attachments})"
+          new="'bbox':[v3(bbmin),v3(bbmax)],'vertices':len(verts),'triangles':len(tris),'attachments':attachments})"
+          assert old in s, 'part manifest record shape changed unexpectedly'
+          p.write_text(s.replace(old,new,1))
+          PY
+          python -m py_compile tools/build_parts.py
+          node --test tests/*.test.mjs
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/build_parts.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix: restore generated mesh vertex metadata'
+          git push origin HEAD:main
