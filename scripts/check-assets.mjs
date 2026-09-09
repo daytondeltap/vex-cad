@@ -30,7 +30,7 @@ for(const part of m.parts){
   if(part.bbox[0].some((v,i)=>v>part.bbox[1][i]))throw new Error(`Inverted bbox for ${part.id}`);
   const attachments=Array.isArray(part.attachments)?part.attachments:[];
   for(const a of attachments){
-    if(!a||!['hole','pin','shaft','socket'].includes(a.type))throw new Error(`Invalid attachment type on ${part.id}`);
+    if(!a||!['hole','pin','shaft','socket','standoff'].includes(a.type))throw new Error(`Invalid attachment type on ${part.id}`);
     if(!finite3(a.point)||!finite3(a.axis))throw new Error(`Invalid attachment coordinates on ${part.id}`);
     const axisLength=Math.hypot(...a.axis);
     if(axisLength<0.9||axisLength>1.1)throw new Error(`Non-unit attachment axis on ${part.id}`);
@@ -51,7 +51,7 @@ for(const part of m.parts){
 const pitchStandoffs=m.parts.filter(p=>/VEX IQ Standoffs\s+228-/i.test(p.name)&&!/extender/i.test(p.name));
 if(pitchStandoffs.length){
   for(const p of pitchStandoffs){
-    const ends=(p.attachments||[]).filter(a=>a.type==='pin'&&a.source==='standoff-end-geometry');
+    const ends=(p.attachments||[]).filter(a=>a.type==='standoff'&&a.source==='standoff-end-geometry');
     if(ends.length!==2)throw new Error(`Standoff ${p.partNumber} must expose exactly two physical connector ends; found ${ends.length}`);
     if(ends.some(a=>!(a.length>=5.8&&a.length<=6.35)))throw new Error(`Standoff ${p.partNumber} has invalid insertion length`);
   }
